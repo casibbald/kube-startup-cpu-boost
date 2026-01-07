@@ -95,6 +95,14 @@ func (r *StartupCPUBoostReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 				// Don't fail reconciliation, just log the error
 			}
 		}
+
+		// Check for PodConditionTransition triggers and apply runtime boosts if needed
+		if boost.HasPodConditionTransitionTrigger() {
+			if err := r.applyRuntimeBoostsForPodConditionTransition(ctx, boost, log); err != nil {
+				log.Error(err, "failed to apply runtime boosts for PodConditionTransition triggers")
+				// Don't fail reconciliation, just log the error
+			}
+		}
 	}
 	meta.SetStatusCondition(&newBoostObj.Status.Conditions, activeCondition)
 	if !equality.Semantic.DeepEqual(newBoostObj.Status, boostObj.Status) {
@@ -246,6 +254,86 @@ func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForContainerRestart(ctx co
 		if shouldActivate {
 			log.Info("applying runtime boost for ContainerRestart trigger", "pod", pod.Name, "namespace", pod.Namespace)
 			applied, err := boost.ApplyBoostAtRuntime(ctx, pod, autoscaling.BoostTriggerTypeContainerRestart)
+			if err != nil {
+				log.Error(err, "failed to apply runtime boost", "pod", pod.Name)
+				continue
+			}
+			if applied {
+				log.Info("runtime boost applied successfully", "pod", pod.Name)
+			} else {
+				log.V(5).Info("boost not applied (likely already active)", "pod", pod.Name)
+			}
+		}
+	}
+
+	return nil
+}
+
+// applyRuntimeBoostsForPodConditionTransition applies runtime boosts to pods that have PodConditionTransition triggers
+// This is called during reconciliation when PodConditionTransition triggers are detected
+func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForPodConditionTransition(ctx context.Context, boost boost.StartupCPUBoost, log logr.Logger) error {
+	// List all pods in the boost namespace
+	podList := &corev1.PodList{}
+	if err := r.Client.List(ctx, podList, client.InNamespace(boost.Namespace())); err != nil {
+		return fmt.Errorf("failed to list pods: %w", err)
+	}
+
+	// Filter to pods that match the boost selector
+	matchingPods := make([]*corev1.Pod, 0)
+	for i := range podList.Items {
+		pod := &podList.Items[i]
+		if boost.Matches(pod) {
+			matchingPods = append(matchingPods, pod)
+		}
+	}
+
+	// For each matching pod, check if boost should be applied
+	for _, pod := range matchingPods {
+		// Get pod annotation to check condition states
+		annotation, err := bpod.BoostAnnotationFromPod(pod)
+		if err != nil {
+			// Pod doesn't have boost annotation yet, skip (will be handled on first activation)
+			continue
+		}
+
+		// Check if current activation has expired and clear it if so (idempotent behavior)
+		if annotation.IsActivationExpired(pod) {
+			log.V(5).Info("boost activation expired, clearing active state", "pod", pod.Name)
+			annotation.ClearCurrentActivation()
+			// Update pod annotation to persist the cleared state
+			labelsPatch := bpod.NewApplyBoostLabelsPatch(annotation, boost.Name())
+			if err := r.Client.Patch(ctx, pod, labelsPatch); err != nil {
+				log.Error(err, "failed to clear expired boost activation", "pod", pod.Name)
+				// Continue processing even if patch fails
+			}
+		}
+
+		// Update condition states and get transitions
+		transitions := annotation.UpdateLastConditionStates(pod)
+		if len(transitions) == 0 {
+			continue
+		}
+
+		// Check if boost should activate for any condition transition
+		shouldActivate := false
+		for conditionType, transition := range transitions {
+			// Only trigger if we have a previous state (not initial observation)
+			// This prevents false positives on initial Ready=True
+			if transition.FromStatus != "" {
+				if boost.ShouldActivateForPodConditionTransition(conditionType, transition.FromStatus, transition.ToStatus) {
+					shouldActivate = true
+					log.V(5).Info("PodConditionTransition trigger matches", "condition", conditionType, "from", transition.FromStatus, "to", transition.ToStatus)
+					break
+				}
+			} else {
+				// First observation - store state but don't trigger
+				log.V(5).Info("first condition observation, storing state without triggering", "condition", conditionType, "status", transition.ToStatus)
+			}
+		}
+
+		if shouldActivate {
+			log.Info("applying runtime boost for PodConditionTransition trigger", "pod", pod.Name, "namespace", pod.Namespace)
+			applied, err := boost.ApplyBoostAtRuntime(ctx, pod, autoscaling.BoostTriggerTypePodConditionTransition)
 			if err != nil {
 				log.Error(err, "failed to apply runtime boost", "pod", pod.Name)
 				continue

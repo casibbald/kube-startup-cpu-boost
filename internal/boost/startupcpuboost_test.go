@@ -771,8 +771,14 @@ var _ = Describe("StartupCPUBoost", func() {
 				testPod.Annotations = nil
 				testPod.Labels = nil
 			})
-			It("should return error", func() {
+			It("should return error for ContainerRestart", func() {
 				applied, err := boost.ApplyBoostAtRuntime(context.TODO(), testPod, autoscaling.BoostTriggerTypeContainerRestart)
+				Expect(err).To(HaveOccurred())
+				Expect(applied).To(BeFalse())
+				Expect(err.Error()).To(ContainSubstring("no matching trigger found"))
+			})
+			It("should return error for PodConditionTransition", func() {
+				applied, err := boost.ApplyBoostAtRuntime(context.TODO(), testPod, autoscaling.BoostTriggerTypePodConditionTransition)
 				Expect(err).To(HaveOccurred())
 				Expect(applied).To(BeFalse())
 				Expect(err.Error()).To(ContainSubstring("no matching trigger found"))
@@ -1004,6 +1010,213 @@ var _ = Describe("StartupCPUBoost", func() {
 				applied, err := boost.ApplyBoostAtRuntime(context.TODO(), testPod, autoscaling.BoostTriggerTypeContainerRestart)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(applied).To(BeTrue())
+			})
+		})
+	})
+	Describe("HasPodConditionTransitionTrigger", func() {
+		JustBeforeEach(func() {
+			boost, err = cpuboost.NewStartupCPUBoost(nil, spec, legacyRevertMode)
+			Expect(err).ShouldNot(HaveOccurred())
+		})
+		When("no triggers are specified", func() {
+			It("should return false", func() {
+				Expect(boost.HasPodConditionTransitionTrigger()).To(BeFalse())
+			})
+		})
+		When("PodConditionTransition trigger is specified", func() {
+			BeforeEach(func() {
+				conditionType := "Ready"
+				fromStatus := "False"
+				toStatus := "True"
+				spec.Spec.Triggers = []autoscaling.BoostTrigger{
+					{
+						Type:          autoscaling.BoostTriggerTypePodConditionTransition,
+						ConditionType: &conditionType,
+						FromStatus:    &fromStatus,
+						ToStatus:      &toStatus,
+					},
+				}
+			})
+			It("should return true", func() {
+				Expect(boost.HasPodConditionTransitionTrigger()).To(BeTrue())
+			})
+		})
+		When("only PodCreate trigger is specified", func() {
+			BeforeEach(func() {
+				spec.Spec.Triggers = []autoscaling.BoostTrigger{
+					{Type: autoscaling.BoostTriggerTypePodCreate},
+				}
+			})
+			It("should return false", func() {
+				Expect(boost.HasPodConditionTransitionTrigger()).To(BeFalse())
+			})
+		})
+		When("multiple triggers including PodConditionTransition", func() {
+			BeforeEach(func() {
+				conditionType := "Ready"
+				fromStatus := "False"
+				toStatus := "True"
+				spec.Spec.Triggers = []autoscaling.BoostTrigger{
+					{Type: autoscaling.BoostTriggerTypePodCreate},
+					{
+						Type:          autoscaling.BoostTriggerTypePodConditionTransition,
+						ConditionType: &conditionType,
+						FromStatus:    &fromStatus,
+						ToStatus:      &toStatus,
+					},
+				}
+			})
+			It("should return true", func() {
+				Expect(boost.HasPodConditionTransitionTrigger()).To(BeTrue())
+			})
+		})
+	})
+	Describe("ShouldActivateForPodConditionTransition", func() {
+		JustBeforeEach(func() {
+			boost, err = cpuboost.NewStartupCPUBoost(nil, spec, legacyRevertMode)
+			Expect(err).ShouldNot(HaveOccurred())
+		})
+		When("no PodConditionTransition trigger is specified", func() {
+			BeforeEach(func() {
+				spec.Spec.Triggers = []autoscaling.BoostTrigger{
+					{Type: autoscaling.BoostTriggerTypePodCreate},
+				}
+			})
+			It("should return false for any transition", func() {
+				Expect(boost.ShouldActivateForPodConditionTransition("Ready", "False", "True")).To(BeFalse())
+			})
+		})
+		When("PodConditionTransition trigger matches condition type and transition", func() {
+			BeforeEach(func() {
+				conditionType := "Ready"
+				fromStatus := "False"
+				toStatus := "True"
+				spec.Spec.Triggers = []autoscaling.BoostTrigger{
+					{
+						Type:          autoscaling.BoostTriggerTypePodConditionTransition,
+						ConditionType: &conditionType,
+						FromStatus:    &fromStatus,
+						ToStatus:      &toStatus,
+					},
+				}
+			})
+			It("should return true for matching transition", func() {
+				Expect(boost.ShouldActivateForPodConditionTransition("Ready", "False", "True")).To(BeTrue())
+			})
+			It("should return false for different condition type", func() {
+				Expect(boost.ShouldActivateForPodConditionTransition("PodScheduled", "False", "True")).To(BeFalse())
+			})
+			It("should return false for different fromStatus", func() {
+				Expect(boost.ShouldActivateForPodConditionTransition("Ready", "True", "True")).To(BeFalse())
+			})
+			It("should return false for different toStatus", func() {
+				Expect(boost.ShouldActivateForPodConditionTransition("Ready", "False", "False")).To(BeFalse())
+			})
+		})
+		When("PodConditionTransition trigger with nil fromStatus (matches any)", func() {
+			BeforeEach(func() {
+				conditionType := "Ready"
+				toStatus := "True"
+				spec.Spec.Triggers = []autoscaling.BoostTrigger{
+					{
+						Type:          autoscaling.BoostTriggerTypePodConditionTransition,
+						ConditionType: &conditionType,
+						FromStatus:    nil,
+						ToStatus:      &toStatus,
+					},
+				}
+			})
+			It("should return true for any fromStatus", func() {
+				Expect(boost.ShouldActivateForPodConditionTransition("Ready", "False", "True")).To(BeTrue())
+				Expect(boost.ShouldActivateForPodConditionTransition("Ready", "True", "True")).To(BeTrue())
+				Expect(boost.ShouldActivateForPodConditionTransition("Ready", "Unknown", "True")).To(BeTrue())
+			})
+		})
+		When("multiple PodConditionTransition triggers", func() {
+			BeforeEach(func() {
+				readyCondition := "Ready"
+				readyFromStatus := "False"
+				readyToStatus := "True"
+				scheduledCondition := "PodScheduled"
+				scheduledFromStatus := "False"
+				scheduledToStatus := "True"
+				spec.Spec.Triggers = []autoscaling.BoostTrigger{
+					{
+						Type:          autoscaling.BoostTriggerTypePodConditionTransition,
+						ConditionType: &readyCondition,
+						FromStatus:    &readyFromStatus,
+						ToStatus:      &readyToStatus,
+					},
+					{
+						Type:          autoscaling.BoostTriggerTypePodConditionTransition,
+						ConditionType: &scheduledCondition,
+						FromStatus:    &scheduledFromStatus,
+						ToStatus:      &scheduledToStatus,
+					},
+				}
+			})
+			It("should return true for any matching transition", func() {
+				Expect(boost.ShouldActivateForPodConditionTransition("Ready", "False", "True")).To(BeTrue())
+				Expect(boost.ShouldActivateForPodConditionTransition("PodScheduled", "False", "True")).To(BeTrue())
+				Expect(boost.ShouldActivateForPodConditionTransition("Ready", "True", "False")).To(BeFalse())
+			})
+		})
+		When("PodConditionTransition trigger with nil toStatus", func() {
+			BeforeEach(func() {
+				conditionType := "Ready"
+				fromStatus := "False"
+				spec.Spec.Triggers = []autoscaling.BoostTrigger{
+					{
+						Type:          autoscaling.BoostTriggerTypePodConditionTransition,
+						ConditionType: &conditionType,
+						FromStatus:    &fromStatus,
+						ToStatus:      nil, // nil toStatus - should not match
+					},
+				}
+			})
+			It("should return false (nil toStatus means no match)", func() {
+				// According to API validation, toStatus should be required, but we handle nil defensively
+				Expect(boost.ShouldActivateForPodConditionTransition("Ready", "False", "True")).To(BeFalse())
+				Expect(boost.ShouldActivateForPodConditionTransition("Ready", "False", "False")).To(BeFalse())
+			})
+		})
+		When("PodConditionTransition trigger with empty condition type", func() {
+			BeforeEach(func() {
+				conditionType := ""
+				fromStatus := "False"
+				toStatus := "True"
+				spec.Spec.Triggers = []autoscaling.BoostTrigger{
+					{
+						Type:          autoscaling.BoostTriggerTypePodConditionTransition,
+						ConditionType: &conditionType,
+						FromStatus:    &fromStatus,
+						ToStatus:      &toStatus,
+					},
+				}
+			})
+			It("should match empty condition type", func() {
+				Expect(boost.ShouldActivateForPodConditionTransition("", "False", "True")).To(BeTrue())
+				Expect(boost.ShouldActivateForPodConditionTransition("Ready", "False", "True")).To(BeFalse())
+			})
+		})
+		When("PodConditionTransition trigger with empty fromStatus string", func() {
+			BeforeEach(func() {
+				conditionType := "Ready"
+				fromStatus := "" // Empty string (not nil)
+				toStatus := "True"
+				spec.Spec.Triggers = []autoscaling.BoostTrigger{
+					{
+						Type:          autoscaling.BoostTriggerTypePodConditionTransition,
+						ConditionType: &conditionType,
+						FromStatus:    &fromStatus,
+						ToStatus:      &toStatus,
+					},
+				}
+			})
+			It("should match empty fromStatus string", func() {
+				// Empty string fromStatus is different from nil (nil means "any")
+				Expect(boost.ShouldActivateForPodConditionTransition("Ready", "", "True")).To(BeTrue())
+				Expect(boost.ShouldActivateForPodConditionTransition("Ready", "False", "True")).To(BeFalse())
 			})
 		})
 	})

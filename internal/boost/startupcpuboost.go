@@ -74,6 +74,11 @@ type StartupCPUBoost interface {
 	// This is used for runtime triggers like ContainerRestart
 	// Returns true if boost was successfully applied, false if already active or error occurred
 	ApplyBoostAtRuntime(ctx context.Context, pod *corev1.Pod, triggerType autoscaling.BoostTriggerType) (bool, error)
+	// HasPodConditionTransitionTrigger returns true if boost has PodConditionTransition trigger configured
+	HasPodConditionTransitionTrigger() bool
+	// ShouldActivateForPodConditionTransition checks if boost should activate for a condition transition
+	// Returns true if PodConditionTransition trigger is configured and matches the condition transition
+	ShouldActivateForPodConditionTransition(conditionType string, fromStatus string, toStatus string) bool
 }
 
 const (
@@ -300,6 +305,41 @@ func (b *StartupCPUBoostImpl) ShouldActivateForContainerRestart(containerName st
 			if *trigger.ContainerName == containerName {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// HasPodConditionTransitionTrigger returns true if boost has PodConditionTransition trigger configured
+func (b *StartupCPUBoostImpl) HasPodConditionTransitionTrigger() bool {
+	for _, trigger := range b.triggers {
+		if trigger.Type == autoscaling.BoostTriggerTypePodConditionTransition {
+			return true
+		}
+	}
+	return false
+}
+
+// ShouldActivateForPodConditionTransition checks if boost should activate for a condition transition
+// Returns true if PodConditionTransition trigger is configured and matches the condition transition
+func (b *StartupCPUBoostImpl) ShouldActivateForPodConditionTransition(conditionType string, fromStatus string, toStatus string) bool {
+	for _, trigger := range b.triggers {
+		if trigger.Type == autoscaling.BoostTriggerTypePodConditionTransition {
+			// Check if condition type matches
+			if trigger.ConditionType == nil || *trigger.ConditionType != conditionType {
+				continue
+			}
+			// Check if fromStatus matches (nil means any status)
+			if trigger.FromStatus != nil && *trigger.FromStatus != fromStatus {
+				continue
+			}
+			// Check if toStatus matches
+			// Note: Webhook validation requires ToStatus to be non-nil for PodConditionTransition,
+			// but we check for nil here as defensive programming to handle edge cases gracefully
+			if trigger.ToStatus == nil || *trigger.ToStatus != toStatus {
+				continue
+			}
+			return true
 		}
 	}
 	return false

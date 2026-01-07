@@ -18,7 +18,7 @@ import (
 	"context"
 
 	"github.com/go-logr/logr"
-	"github.com/google/kube-startup-cpu-boost/internal/boost/pod"
+	bpod "github.com/google/kube-startup-cpu-boost/internal/boost/pod"
 	"github.com/google/kube-startup-cpu-boost/internal/controller"
 	"github.com/google/kube-startup-cpu-boost/internal/mock"
 	. "github.com/onsi/ginkgo/v2"
@@ -193,10 +193,12 @@ var _ = Describe("BoostPodHandler", func() {
 			When("There is a boost matching the POD", func() {
 				BeforeEach(func() {
 					boostMock := mock.NewMockStartupCPUBoost(mockCtrl)
-					boostMock.EXPECT().Name().Return(specTemplate.Name).MinTimes(1)
-					boostMock.EXPECT().Namespace().Return(specTemplate.Namespace).MinTimes(1)
+					boostMock.EXPECT().Name().Return(specTemplate.Name).AnyTimes()
+					boostMock.EXPECT().Namespace().Return(specTemplate.Namespace).AnyTimes()
 					// Expect HasContainerRestartTrigger to be called (returns false for condition-based tests)
 					boostMock.EXPECT().HasContainerRestartTrigger().Return(false).AnyTimes()
+					// Expect HasPodConditionTransitionTrigger to be called (returns false for backward compatibility tests)
+					boostMock.EXPECT().HasPodConditionTransitionTrigger().Return(false).AnyTimes()
 					mgrMockCall.Return(boostMock, nil)
 				})
 				It("sends a valid call to the boost manager and a boost", func() {
@@ -207,6 +209,142 @@ var _ = Describe("BoostPodHandler", func() {
 					req, _ := wq.Get()
 					Expect(req.Name).To(Equal(specTemplate.Name))
 					Expect(req.Namespace).To(Equal(specTemplate.Namespace))
+				})
+			})
+		})
+		When("PodConditionTransition trigger is configured", func() {
+			BeforeEach(func() {
+				oldPod.Status.Conditions = []corev1.PodCondition{
+					{
+						Type:   corev1.PodReady,
+						Status: corev1.ConditionFalse,
+					},
+				}
+				newPod.Status.Conditions = []corev1.PodCondition{
+					{
+						Type:   corev1.PodReady,
+						Status: corev1.ConditionTrue,
+					},
+				}
+				mgrMockCall = mgrMock.EXPECT().UpsertPod(
+					gomock.Any(),
+					gomock.Eq(newPod),
+				)
+			})
+			When("boost has PodConditionTransition trigger", func() {
+				var boostMock *mock.MockStartupCPUBoost
+				BeforeEach(func() {
+					boostMock = mock.NewMockStartupCPUBoost(mockCtrl)
+					boostMock.EXPECT().Name().Return(specTemplate.Name).AnyTimes()
+					boostMock.EXPECT().Namespace().Return(specTemplate.Namespace).AnyTimes()
+					boostMock.EXPECT().HasContainerRestartTrigger().Return(false).AnyTimes()
+					boostMock.EXPECT().HasPodConditionTransitionTrigger().Return(true).AnyTimes()
+					mgrMockCall.Return(boostMock, nil)
+					// Add boost annotation to pod for condition tracking
+					if newPod.Annotations == nil {
+						newPod.Annotations = make(map[string]string)
+					}
+					annotation := bpod.NewBoostAnnotation()
+					newPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+				})
+				When("first condition observation (Ready=True initially)", func() {
+					BeforeEach(func() {
+						// Pod starts with Ready=True (no previous state)
+						oldPod.Status.Conditions = []corev1.PodCondition{}
+						newPod.Status.Conditions = []corev1.PodCondition{
+							{
+								Type:   corev1.PodReady,
+								Status: corev1.ConditionTrue,
+							},
+						}
+						// Should not call ShouldActivateForPodConditionTransition (first observation)
+						boostMock.EXPECT().ShouldActivateForPodConditionTransition(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+					})
+					It("should not trigger boost (prevents false positive)", func() {
+						Expect(wq.Len()).To(Equal(0))
+					})
+				})
+				When("matching transition (Ready False -> True)", func() {
+					BeforeEach(func() {
+						// Set initial state in annotation
+						annotation := bpod.NewBoostAnnotation()
+						annotation.SetLastConditionState("Ready", "False")
+						newPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+						// Mock matching transition
+						boostMock.EXPECT().ShouldActivateForPodConditionTransition("Ready", "False", "True").Return(true).Times(1)
+					})
+					It("should queue reconciliation request", func() {
+						Expect(wq.Len()).To(Equal(1))
+						req, _ := wq.Get()
+						Expect(req.Name).To(Equal(specTemplate.Name))
+						Expect(req.Namespace).To(Equal(specTemplate.Namespace))
+					})
+				})
+				When("non-matching transition (Ready True -> False)", func() {
+					BeforeEach(func() {
+						// Set initial state in annotation
+						annotation := bpod.NewBoostAnnotation()
+						annotation.SetLastConditionState("Ready", "True")
+						newPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+						// Update condition to False
+						newPod.Status.Conditions[0].Status = corev1.ConditionFalse
+						// Mock non-matching transition (trigger expects False -> True)
+						boostMock.EXPECT().ShouldActivateForPodConditionTransition("Ready", "True", "False").Return(false).Times(1)
+					})
+					It("should not queue reconciliation request", func() {
+						Expect(wq.Len()).To(Equal(0))
+					})
+				})
+				When("pod without annotation", func() {
+					BeforeEach(func() {
+						// Remove annotation
+						newPod.Annotations = nil
+						// Should not call ShouldActivateForPodConditionTransition
+						boostMock.EXPECT().ShouldActivateForPodConditionTransition(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+					})
+					It("should not trigger (annotation will be created on first activation)", func() {
+						Expect(wq.Len()).To(Equal(0))
+					})
+				})
+				When("multiple condition transitions", func() {
+					BeforeEach(func() {
+						// Set initial states
+						annotation := bpod.NewBoostAnnotation()
+						annotation.SetLastConditionState("Ready", "False")
+						annotation.SetLastConditionState("PodScheduled", "True")
+						newPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+						// Update conditions
+						newPod.Status.Conditions = []corev1.PodCondition{
+							{
+								Type:   corev1.PodReady,
+								Status: corev1.ConditionTrue,
+							},
+							{
+								Type:   corev1.PodScheduled,
+								Status: corev1.ConditionFalse,
+							},
+						}
+						// First transition doesn't match, second does
+						boostMock.EXPECT().ShouldActivateForPodConditionTransition("Ready", "False", "True").Return(false).Times(1)
+						boostMock.EXPECT().ShouldActivateForPodConditionTransition("PodScheduled", "True", "False").Return(true).Times(1)
+					})
+					It("should queue reconciliation when any transition matches", func() {
+						Expect(wq.Len()).To(Equal(1))
+					})
+				})
+				When("no transitions detected", func() {
+					BeforeEach(func() {
+						// Set state matching current condition
+						annotation := bpod.NewBoostAnnotation()
+						annotation.SetLastConditionState("Ready", "True")
+						newPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+						// Condition hasn't changed
+						// Should not call ShouldActivateForPodConditionTransition
+						boostMock.EXPECT().ShouldActivateForPodConditionTransition(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+					})
+					It("should not queue reconciliation request", func() {
+						Expect(wq.Len()).To(Equal(0))
+					})
 				})
 			})
 		})
@@ -225,7 +363,7 @@ var _ = Describe("BoostPodHandler", func() {
 				m = &selector.MatchExpressions[0]
 			})
 			It("has a valid key", func() {
-				Expect(m.Key).To(Equal(pod.BoostLabelKey))
+				Expect(m.Key).To(Equal(bpod.BoostLabelKey))
 			})
 			It("has empty values list", func() {
 				Expect(m.Values).To(HaveLen(0))
