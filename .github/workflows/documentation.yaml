@@ -18,6 +18,7 @@ on:
     branches:
       - main
       - development
+      - 'story/**'
   pull_request:
     branches:
       - main
