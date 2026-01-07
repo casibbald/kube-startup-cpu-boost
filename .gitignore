@@ -25,3 +25,5 @@ demo-app/target
 .vscode
 docs/
 coverage/
+coverage.html
+coverage.out
