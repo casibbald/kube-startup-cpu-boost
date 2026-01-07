@@ -65,6 +65,11 @@ type ActivationState struct {
 	// Used to detect ContainerRestart trigger activations
 	// Key: container name, Value: restartCount (as string)
 	LastRestartCounts map[string]int32 `json:"lastRestartCounts,omitempty"`
+
+	// LastConditionStates tracks the last seen condition status per condition type
+	// Used to detect PodConditionTransition trigger activations
+	// Key: condition type (e.g., "Ready", "PodScheduled"), Value: condition status ("True", "False", "Unknown")
+	LastConditionStates map[string]string `json:"lastConditionStates,omitempty"`
 }
 
 // ActivationStateEntry represents a single activation state entry
@@ -99,9 +104,10 @@ func NewBoostAnnotation() *BoostPodAnnotation {
 		InitCPURequests: make(map[string]string),
 		InitCPULimits:   make(map[string]string),
 		ActivationState: &ActivationState{
-			LastActivationTime: make(map[string]string),
-			ActivationHistory:  make([]string, 0),
-			LastRestartCounts:  make(map[string]int32),
+			LastActivationTime:  make(map[string]string),
+			ActivationHistory:   make([]string, 0),
+			LastRestartCounts:   make(map[string]int32),
+			LastConditionStates: make(map[string]string),
 		},
 	}
 }
@@ -139,6 +145,9 @@ func BoostAnnotationFromPod(pod *corev1.Pod) (*BoostPodAnnotation, error) {
 	}
 	if annotation.ActivationState.LastRestartCounts == nil {
 		annotation.ActivationState.LastRestartCounts = make(map[string]int32)
+	}
+	if annotation.ActivationState.LastConditionStates == nil {
+		annotation.ActivationState.LastConditionStates = make(map[string]string)
 	}
 	return annotation, nil
 }
@@ -422,6 +431,55 @@ func (a *BoostPodAnnotation) UpdateLastRestartCounts(pod *corev1.Pod) map[string
 	}
 
 	return incremented
+}
+
+// GetLastConditionState returns the last seen condition status for a condition type
+func (a *BoostPodAnnotation) GetLastConditionState(conditionType string) (string, bool) {
+	state := a.GetActivationState()
+	status, ok := state.LastConditionStates[conditionType]
+	return status, ok
+}
+
+// SetLastConditionState sets the last seen condition status for a condition type
+func (a *BoostPodAnnotation) SetLastConditionState(conditionType string, status string) {
+	state := a.GetActivationState()
+	state.LastConditionStates[conditionType] = status
+}
+
+// UpdateLastConditionStates updates the last seen condition states from pod status
+// Returns a map of condition types that transitioned (from old status to new status)
+// Key: condition type, Value: transition info (fromStatus -> toStatus)
+type ConditionTransition struct {
+	FromStatus string
+	ToStatus   string
+}
+
+func (a *BoostPodAnnotation) UpdateLastConditionStates(pod *corev1.Pod) map[string]ConditionTransition {
+	state := a.GetActivationState()
+	transitions := make(map[string]ConditionTransition)
+
+	// Defensive check: handle nil or empty conditions
+	if pod == nil || pod.Status.Conditions == nil {
+		return transitions
+	}
+
+	for _, condition := range pod.Status.Conditions {
+		conditionType := string(condition.Type)
+		currentStatus := string(condition.Status)
+		lastStatus, exists := state.LastConditionStates[conditionType]
+
+		// If condition status changed, record the transition
+		if !exists || currentStatus != lastStatus {
+			transitions[conditionType] = ConditionTransition{
+				FromStatus: lastStatus,
+				ToStatus:   currentStatus,
+			}
+			// Update the stored state
+			state.LastConditionStates[conditionType] = currentStatus
+		}
+	}
+
+	return transitions
 }
 
 // applyBoostResourcesToPod applies boost resources to a pod (mutates pod in-place)

@@ -722,4 +722,176 @@ var _ = Describe("Pod", func() {
 			})
 		})
 	})
+	Describe("Condition State Tracking", func() {
+		var (
+			annotation *bpod.BoostPodAnnotation
+			testPod    *corev1.Pod
+		)
+		BeforeEach(func() {
+			annotation = bpod.NewBoostAnnotation()
+			testPod = podTemplate.DeepCopy()
+		})
+		Describe("GetLastConditionState", func() {
+			It("returns false when condition state not tracked", func() {
+				status, exists := annotation.GetLastConditionState("Ready")
+				Expect(exists).To(BeFalse())
+				Expect(status).To(BeEmpty())
+			})
+			It("returns stored condition state", func() {
+				annotation.SetLastConditionState("Ready", "True")
+				status, exists := annotation.GetLastConditionState("Ready")
+				Expect(exists).To(BeTrue())
+				Expect(status).To(Equal("True"))
+			})
+		})
+		Describe("SetLastConditionState", func() {
+			It("stores condition state", func() {
+				annotation.SetLastConditionState("Ready", "False")
+				status, exists := annotation.GetLastConditionState("Ready")
+				Expect(exists).To(BeTrue())
+				Expect(status).To(Equal("False"))
+			})
+			It("updates existing condition state", func() {
+				annotation.SetLastConditionState("Ready", "False")
+				annotation.SetLastConditionState("Ready", "True")
+				status, exists := annotation.GetLastConditionState("Ready")
+				Expect(exists).To(BeTrue())
+				Expect(status).To(Equal("True"))
+			})
+		})
+		Describe("UpdateLastConditionStates", func() {
+			It("returns empty map when no conditions in pod", func() {
+				testPod.Status.Conditions = []corev1.PodCondition{}
+				transitions := annotation.UpdateLastConditionStates(testPod)
+				Expect(transitions).To(BeEmpty())
+			})
+			It("returns transitions for first observation (empty fromStatus)", func() {
+				testPod.Status.Conditions = []corev1.PodCondition{
+					{
+						Type:   corev1.PodReady,
+						Status: corev1.ConditionTrue,
+					},
+				}
+				transitions := annotation.UpdateLastConditionStates(testPod)
+				Expect(transitions).To(HaveKey("Ready"))
+				Expect(transitions["Ready"].FromStatus).To(BeEmpty())
+				Expect(transitions["Ready"].ToStatus).To(Equal("True"))
+				// State should be stored
+				status, exists := annotation.GetLastConditionState("Ready")
+				Expect(exists).To(BeTrue())
+				Expect(status).To(Equal("True"))
+			})
+			It("returns transitions when condition status changes", func() {
+				// Set initial state
+				annotation.SetLastConditionState("Ready", "False")
+				// Update pod condition
+				testPod.Status.Conditions = []corev1.PodCondition{
+					{
+						Type:   corev1.PodReady,
+						Status: corev1.ConditionTrue,
+					},
+				}
+				transitions := annotation.UpdateLastConditionStates(testPod)
+				Expect(transitions).To(HaveKey("Ready"))
+				Expect(transitions["Ready"].FromStatus).To(Equal("False"))
+				Expect(transitions["Ready"].ToStatus).To(Equal("True"))
+				// State should be updated
+				status, exists := annotation.GetLastConditionState("Ready")
+				Expect(exists).To(BeTrue())
+				Expect(status).To(Equal("True"))
+			})
+			It("returns empty map when condition status unchanged", func() {
+				// Set initial state
+				annotation.SetLastConditionState("Ready", "True")
+				// Update pod condition with same status
+				testPod.Status.Conditions = []corev1.PodCondition{
+					{
+						Type:   corev1.PodReady,
+						Status: corev1.ConditionTrue,
+					},
+				}
+				transitions := annotation.UpdateLastConditionStates(testPod)
+				Expect(transitions).To(BeEmpty())
+				// State should remain unchanged
+				status, exists := annotation.GetLastConditionState("Ready")
+				Expect(exists).To(BeTrue())
+				Expect(status).To(Equal("True"))
+			})
+			It("handles multiple condition transitions", func() {
+				// Set initial states
+				annotation.SetLastConditionState("Ready", "False")
+				annotation.SetLastConditionState("PodScheduled", "True")
+				// Update pod conditions
+				testPod.Status.Conditions = []corev1.PodCondition{
+					{
+						Type:   corev1.PodReady,
+						Status: corev1.ConditionTrue,
+					},
+					{
+						Type:   corev1.PodScheduled,
+						Status: corev1.ConditionFalse,
+					},
+				}
+				transitions := annotation.UpdateLastConditionStates(testPod)
+				Expect(transitions).To(HaveKey("Ready"))
+				Expect(transitions).To(HaveKey("PodScheduled"))
+				Expect(transitions["Ready"].FromStatus).To(Equal("False"))
+				Expect(transitions["Ready"].ToStatus).To(Equal("True"))
+				Expect(transitions["PodScheduled"].FromStatus).To(Equal("True"))
+				Expect(transitions["PodScheduled"].ToStatus).To(Equal("False"))
+			})
+			It("handles Unknown status", func() {
+				annotation.SetLastConditionState("Ready", "True")
+				testPod.Status.Conditions = []corev1.PodCondition{
+					{
+						Type:   corev1.PodReady,
+						Status: corev1.ConditionUnknown,
+					},
+				}
+				transitions := annotation.UpdateLastConditionStates(testPod)
+				Expect(transitions).To(HaveKey("Ready"))
+				Expect(transitions["Ready"].FromStatus).To(Equal("True"))
+				Expect(transitions["Ready"].ToStatus).To(Equal("Unknown"))
+			})
+			It("handles condition that disappears (no longer in pod status)", func() {
+				// Set initial state for a condition
+				annotation.SetLastConditionState("Ready", "True")
+				// Pod no longer has Ready condition (it disappeared)
+				testPod.Status.Conditions = []corev1.PodCondition{
+					{
+						Type:   corev1.PodScheduled,
+						Status: corev1.ConditionTrue,
+					},
+				}
+				transitions := annotation.UpdateLastConditionStates(testPod)
+				// Disappeared conditions are not tracked as transitions
+				// Only conditions present in pod.Status.Conditions are processed
+				Expect(transitions).NotTo(HaveKey("Ready"))
+				// Ready state should still be stored (not cleared)
+				status, exists := annotation.GetLastConditionState("Ready")
+				Expect(exists).To(BeTrue())
+				Expect(status).To(Equal("True"))
+			})
+			It("handles empty condition type string", func() {
+				// Edge case: empty condition type (shouldn't happen in practice, but be defensive)
+				testPod.Status.Conditions = []corev1.PodCondition{
+					{
+						Type:   corev1.PodConditionType(""),
+						Status: corev1.ConditionTrue,
+					},
+				}
+				transitions := annotation.UpdateLastConditionStates(testPod)
+				// Should still process it (empty string is valid)
+				Expect(transitions).To(HaveKey(""))
+				Expect(transitions[""].ToStatus).To(Equal("True"))
+			})
+			It("handles pod with nil Status.Conditions", func() {
+				// Edge case: pod.Status might be nil or Conditions might be nil
+				testPod.Status.Conditions = nil
+				transitions := annotation.UpdateLastConditionStates(testPod)
+				// Should return empty map, not panic
+				Expect(transitions).To(BeEmpty())
+			})
+		})
+	})
 })
