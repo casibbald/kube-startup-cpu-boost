@@ -396,6 +396,197 @@ var _ = Describe("StartupCPUBoost webhook", func() {
 				It("errors", func() {
 					_, err = w.ValidateCreate(context.TODO(), &boost)
 					Expect(err).To(HaveOccurred())
+					Expect(err.Error()).To(ContainSubstring("conditionType"))
+					Expect(err.Error()).To(ContainSubstring("fromStatus"))
+					Expect(err.Error()).To(ContainSubstring("toStatus"))
+				})
+			})
+			When("PodConditionTransition trigger missing conditionType only", func() {
+				BeforeEach(func() {
+					transitionType := v1alpha1.BoostTriggerTypePodConditionTransition
+					fromStatus := "False"
+					toStatus := "True"
+					boost = v1alpha1.StartupCPUBoost{
+						Spec: v1alpha1.StartupCPUBoostSpec{
+							ResourcePolicy: v1alpha1.ResourcePolicy{
+								ContainerPolicies: []v1alpha1.ContainerPolicy{
+									{
+										ContainerName:  "container-one",
+										FixedResources: &v1alpha1.FixedResources{},
+									},
+								},
+							},
+							DurationPolicy: v1alpha1.DurationPolicy{
+								PodCondition: &v1alpha1.PodConditionDurationPolicy{},
+							},
+							Triggers: []v1alpha1.BoostTrigger{
+								{
+									Type:       transitionType,
+									FromStatus: &fromStatus,
+									ToStatus:   &toStatus,
+									// Missing conditionType
+								},
+							},
+						},
+					}
+				})
+				It("errors with conditionType required", func() {
+					_, err = w.ValidateCreate(context.TODO(), &boost)
+					Expect(err).To(HaveOccurred())
+					Expect(err.Error()).To(ContainSubstring("conditionType"))
+				})
+			})
+			When("PodConditionTransition trigger missing fromStatus only", func() {
+				BeforeEach(func() {
+					transitionType := v1alpha1.BoostTriggerTypePodConditionTransition
+					conditionType := "Ready"
+					toStatus := "True"
+					boost = v1alpha1.StartupCPUBoost{
+						Spec: v1alpha1.StartupCPUBoostSpec{
+							ResourcePolicy: v1alpha1.ResourcePolicy{
+								ContainerPolicies: []v1alpha1.ContainerPolicy{
+									{
+										ContainerName:  "container-one",
+										FixedResources: &v1alpha1.FixedResources{},
+									},
+								},
+							},
+							DurationPolicy: v1alpha1.DurationPolicy{
+								PodCondition: &v1alpha1.PodConditionDurationPolicy{},
+							},
+							Triggers: []v1alpha1.BoostTrigger{
+								{
+									Type:          transitionType,
+									ConditionType: &conditionType,
+									ToStatus:      &toStatus,
+									// Missing fromStatus
+								},
+							},
+						},
+					}
+				})
+				It("errors with fromStatus required", func() {
+					_, err = w.ValidateCreate(context.TODO(), &boost)
+					Expect(err).To(HaveOccurred())
+					Expect(err.Error()).To(ContainSubstring("fromStatus"))
+				})
+			})
+			When("PodConditionTransition trigger missing toStatus only", func() {
+				BeforeEach(func() {
+					transitionType := v1alpha1.BoostTriggerTypePodConditionTransition
+					conditionType := "Ready"
+					fromStatus := "False"
+					boost = v1alpha1.StartupCPUBoost{
+						Spec: v1alpha1.StartupCPUBoostSpec{
+							ResourcePolicy: v1alpha1.ResourcePolicy{
+								ContainerPolicies: []v1alpha1.ContainerPolicy{
+									{
+										ContainerName:  "container-one",
+										FixedResources: &v1alpha1.FixedResources{},
+									},
+								},
+							},
+							DurationPolicy: v1alpha1.DurationPolicy{
+								PodCondition: &v1alpha1.PodConditionDurationPolicy{},
+							},
+							Triggers: []v1alpha1.BoostTrigger{
+								{
+									Type:          transitionType,
+									ConditionType: &conditionType,
+									FromStatus:    &fromStatus,
+									// Missing toStatus
+								},
+							},
+						},
+					}
+				})
+				It("errors with toStatus required", func() {
+					_, err = w.ValidateCreate(context.TODO(), &boost)
+					Expect(err).To(HaveOccurred())
+					Expect(err.Error()).To(ContainSubstring("toStatus"))
+				})
+			})
+			When("PodConditionTransition trigger with all status combinations", func() {
+				BeforeEach(func() {
+					boost = v1alpha1.StartupCPUBoost{
+						Spec: v1alpha1.StartupCPUBoostSpec{
+							ResourcePolicy: v1alpha1.ResourcePolicy{
+								ContainerPolicies: []v1alpha1.ContainerPolicy{
+									{
+										ContainerName:  "container-one",
+										FixedResources: &v1alpha1.FixedResources{},
+									},
+								},
+							},
+							DurationPolicy: v1alpha1.DurationPolicy{
+								PodCondition: &v1alpha1.PodConditionDurationPolicy{},
+							},
+						},
+					}
+				})
+				It("accepts True -> False transition", func() {
+					transitionType := v1alpha1.BoostTriggerTypePodConditionTransition
+					conditionType := "Ready"
+					fromStatus := "True"
+					toStatus := "False"
+					boost.Spec.Triggers = []v1alpha1.BoostTrigger{
+						{
+							Type:          transitionType,
+							ConditionType: &conditionType,
+							FromStatus:    &fromStatus,
+							ToStatus:      &toStatus,
+						},
+					}
+					_, err = w.ValidateCreate(context.TODO(), &boost)
+					Expect(err).NotTo(HaveOccurred())
+				})
+				It("accepts False -> True transition", func() {
+					transitionType := v1alpha1.BoostTriggerTypePodConditionTransition
+					conditionType := "Ready"
+					fromStatus := "False"
+					toStatus := "True"
+					boost.Spec.Triggers = []v1alpha1.BoostTrigger{
+						{
+							Type:          transitionType,
+							ConditionType: &conditionType,
+							FromStatus:    &fromStatus,
+							ToStatus:      &toStatus,
+						},
+					}
+					_, err = w.ValidateCreate(context.TODO(), &boost)
+					Expect(err).NotTo(HaveOccurred())
+				})
+				It("accepts Unknown -> True transition", func() {
+					transitionType := v1alpha1.BoostTriggerTypePodConditionTransition
+					conditionType := "Ready"
+					fromStatus := "Unknown"
+					toStatus := "True"
+					boost.Spec.Triggers = []v1alpha1.BoostTrigger{
+						{
+							Type:          transitionType,
+							ConditionType: &conditionType,
+							FromStatus:    &fromStatus,
+							ToStatus:      &toStatus,
+						},
+					}
+					_, err = w.ValidateCreate(context.TODO(), &boost)
+					Expect(err).NotTo(HaveOccurred())
+				})
+				It("accepts False -> Unknown transition", func() {
+					transitionType := v1alpha1.BoostTriggerTypePodConditionTransition
+					conditionType := "Ready"
+					fromStatus := "False"
+					toStatus := "Unknown"
+					boost.Spec.Triggers = []v1alpha1.BoostTrigger{
+						{
+							Type:          transitionType,
+							ConditionType: &conditionType,
+							FromStatus:    &fromStatus,
+							ToStatus:      &toStatus,
+						},
+					}
+					_, err = w.ValidateCreate(context.TODO(), &boost)
+					Expect(err).NotTo(HaveOccurred())
 				})
 			})
 			When("Startup CPU Boost has no triggers (backward compatibility)", func() {
