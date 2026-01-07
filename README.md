@@ -201,6 +201,52 @@ Define the POD condition, the resource boost effect will last until the conditio
        status: "True" 
   ```
 
+### [Boost triggers] PodConditionTransition
+
+Activate CPU boost when pod conditions transition between states. This is
+useful for recovery scenarios where pods temporarily lose readiness without
+container restarts (e.g., database restarts, network issues).
+
+#### Common Pattern: Ready False → True
+
+The most common use case is to boost CPU when a pod recovers from a NotReady
+state:
+
+```yaml
+spec:
+  triggers:
+    - type: PodConditionTransition
+      conditionType: Ready
+      fromStatus: "False"
+      toStatus: "True"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: app
+        percentageIncrease:
+          value: 50
+  durationPolicy:
+    podCondition:
+      type: Ready
+      status: "True"
+```
+
+**Configuration Fields:**
+
+* `conditionType`: The pod condition to watch (e.g., "Ready",
+  "PodScheduled")
+* `fromStatus`: The source condition status ("True", "False", or
+  "Unknown")
+* `toStatus`: The target condition status ("True", "False", or "Unknown")
+
+**Supported Status Values:**
+
+* `"True"`: Condition is satisfied
+* `"False"`: Condition is not satisfied
+* `"Unknown"`: Condition status is unknown
+
+**Note:** All three fields (`conditionType`, `fromStatus`, `toStatus`) are
+required when using `PodConditionTransition` trigger type.
+
 ## Configuration
 
 Kube Startup CPU Boost operator can be configured with environmental variables.
