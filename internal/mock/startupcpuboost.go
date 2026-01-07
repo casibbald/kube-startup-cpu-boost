@@ -285,3 +285,31 @@ func (mr *MockStartupCPUBoostMockRecorder) ApplyBoostAtRuntime(ctx, pod, trigger
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ApplyBoostAtRuntime", reflect.TypeOf((*MockStartupCPUBoost)(nil).ApplyBoostAtRuntime), ctx, pod, triggerType)
 }
+
+// HasPodConditionTransitionTrigger mocks base method.
+func (m *MockStartupCPUBoost) HasPodConditionTransitionTrigger() bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "HasPodConditionTransitionTrigger")
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// HasPodConditionTransitionTrigger indicates an expected call of HasPodConditionTransitionTrigger.
+func (mr *MockStartupCPUBoostMockRecorder) HasPodConditionTransitionTrigger() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "HasPodConditionTransitionTrigger", reflect.TypeOf((*MockStartupCPUBoost)(nil).HasPodConditionTransitionTrigger))
+}
+
+// ShouldActivateForPodConditionTransition mocks base method.
+func (m *MockStartupCPUBoost) ShouldActivateForPodConditionTransition(conditionType, fromStatus, toStatus string) bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ShouldActivateForPodConditionTransition", conditionType, fromStatus, toStatus)
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// ShouldActivateForPodConditionTransition indicates an expected call of ShouldActivateForPodConditionTransition.
+func (mr *MockStartupCPUBoostMockRecorder) ShouldActivateForPodConditionTransition(conditionType, fromStatus, toStatus any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ShouldActivateForPodConditionTransition", reflect.TypeOf((*MockStartupCPUBoost)(nil).ShouldActivateForPodConditionTransition), conditionType, fromStatus, toStatus)
+}

@@ -146,6 +146,7 @@ var _ = Describe("BoostController", func() {
 					gomock.Eq(namespace)).Times(1).Return(mockBoost, true)
 				mockBoost.EXPECT().Stats().Times(1).Return(stats)
 				mockBoost.EXPECT().HasContainerRestartTrigger().Return(false).AnyTimes()
+				mockBoost.EXPECT().HasPodConditionTransitionTrigger().Return(false).AnyTimes()
 				mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 			})
 			When("there existing status is up to date", func() {
@@ -263,6 +264,7 @@ var _ = Describe("BoostController", func() {
 					gomock.Eq(namespace)).Times(1).Return(mockBoost, true)
 				mockBoost.EXPECT().Stats().Times(1).Return(stats)
 				mockBoost.EXPECT().HasContainerRestartTrigger().Return(true).Times(1)
+				mockBoost.EXPECT().HasPodConditionTransitionTrigger().Return(false).AnyTimes()
 				mockBoost.EXPECT().Namespace().Return(namespace).AnyTimes()
 				mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName),
 					gomock.Any()).
@@ -305,6 +307,7 @@ var _ = Describe("BoostController", func() {
 					gomock.Eq(namespace)).Times(1).Return(mockBoost, true)
 				mockBoost.EXPECT().Stats().Times(1).Return(stats)
 				mockBoost.EXPECT().HasContainerRestartTrigger().Return(true).Times(1)
+				mockBoost.EXPECT().HasPodConditionTransitionTrigger().Return(false).AnyTimes()
 				mockBoost.EXPECT().Namespace().Return(namespace).AnyTimes()
 				mockBoost.EXPECT().Name().Return(name).AnyTimes()
 				mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName),
@@ -373,6 +376,7 @@ var _ = Describe("BoostController", func() {
 					gomock.Eq(namespace)).Times(1).Return(mockBoost, true)
 				mockBoost.EXPECT().Stats().Times(1).Return(stats)
 				mockBoost.EXPECT().HasContainerRestartTrigger().Return(true).Times(1)
+				mockBoost.EXPECT().HasPodConditionTransitionTrigger().Return(false).AnyTimes()
 				mockBoost.EXPECT().Namespace().Return(namespace).AnyTimes()
 				mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName),
 					gomock.Any()).
@@ -412,6 +416,7 @@ var _ = Describe("BoostController", func() {
 					gomock.Eq(namespace)).Times(1).Return(mockBoost, true)
 				mockBoost.EXPECT().Stats().Times(1).Return(stats)
 				mockBoost.EXPECT().HasContainerRestartTrigger().Return(true).Times(1)
+				mockBoost.EXPECT().HasPodConditionTransitionTrigger().Return(false).AnyTimes()
 				mockBoost.EXPECT().Namespace().Return(namespace).AnyTimes()
 				mockBoost.EXPECT().Name().Return(name).AnyTimes()
 				mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName),
@@ -481,6 +486,382 @@ var _ = Describe("BoostController", func() {
 			It("should clear expired activation", func() {
 				Expect(err).To(BeNil())
 				Expect(result).To(Equal(ctrl.Result{}))
+			})
+		})
+	})
+	Describe("Reconcile with PodConditionTransition trigger", func() {
+		var (
+			name      string
+			namespace string
+			req       ctrl.Request
+			result    ctrl.Result
+			err       error
+		)
+		BeforeEach(func() {
+			name = "boost-001"
+			namespace = "demo"
+			req = ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: name, Namespace: namespace},
+			}
+		})
+		JustBeforeEach(func() {
+			result, err = boostCtrl.Reconcile(context.TODO(), req)
+		})
+		When("boost has PodConditionTransition trigger and matching pods", func() {
+			var (
+				totalContainerBoosts  = 10
+				activeContainerBoosts = 5
+			)
+			BeforeEach(func() {
+				stats := boost.StartupCPUBoostStats{
+					TotalContainerBoosts:  totalContainerBoosts,
+					ActiveContainerBoosts: activeContainerBoosts,
+				}
+				mockManager.EXPECT().GetRegularCPUBoost(gomock.Any(), gomock.Eq(name),
+					gomock.Eq(namespace)).Times(1).Return(mockBoost, true)
+				mockBoost.EXPECT().Stats().Times(1).Return(stats)
+				mockBoost.EXPECT().HasContainerRestartTrigger().Return(false).AnyTimes()
+				mockBoost.EXPECT().HasPodConditionTransitionTrigger().Return(true).Times(1)
+				mockBoost.EXPECT().Namespace().Return(namespace).AnyTimes()
+				mockBoost.EXPECT().Name().Return(name).AnyTimes()
+				mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName),
+					gomock.Any()).
+					Times(1).
+					DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object,
+						opts ...client.GetOption) error {
+						boostObj := obj.(*autoscaling.StartupCPUBoost)
+						boostObj.Name = name
+						boostObj.Namespace = namespace
+						return nil
+					})
+				mockSubResClient := mock.NewMockSubResourceClient(mockCtrl)
+				mockSubResClient.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+				mockClient.EXPECT().Status().Return(mockSubResClient).AnyTimes()
+			})
+			When("no matching pods", func() {
+				BeforeEach(func() {
+					mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
+						DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+							podListOut := list.(*corev1.PodList)
+							*podListOut = corev1.PodList{Items: []corev1.Pod{}}
+							return nil
+						}).Times(1)
+				})
+				It("should call applyRuntimeBoostsForPodConditionTransition", func() {
+					Expect(err).To(BeNil())
+					Expect(result).To(Equal(ctrl.Result{}))
+				})
+			})
+			When("matching pods with condition transitions", func() {
+				var testPod *corev1.Pod
+				BeforeEach(func() {
+					testPod = &corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-pod",
+							Namespace: namespace,
+							Labels: map[string]string{
+								"app": "test",
+							},
+							Annotations: make(map[string]string),
+						},
+						Status: corev1.PodStatus{
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					}
+					// Set initial condition state in annotation
+					annotation := bpod.NewBoostAnnotation()
+					annotation.SetLastConditionState("Ready", "False")
+					testPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+					mockBoost.EXPECT().Matches(gomock.Any()).Return(true).AnyTimes()
+					mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
+						DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+							podListOut := list.(*corev1.PodList)
+							*podListOut = corev1.PodList{Items: []corev1.Pod{*testPod}}
+							return nil
+						}).Times(1)
+					// Mock transition matching
+					mockBoost.EXPECT().ShouldActivateForPodConditionTransition("Ready", "False", "True").Return(true).Times(1)
+					// Mock ApplyBoostAtRuntime
+					mockBoost.EXPECT().ApplyBoostAtRuntime(gomock.Any(), gomock.Any(), autoscaling.BoostTriggerTypePodConditionTransition).Return(true, nil).Times(1)
+				})
+				It("should apply boost to pods with matching transitions", func() {
+					Expect(err).To(BeNil())
+					Expect(result).To(Equal(ctrl.Result{}))
+				})
+			})
+			When("matching pods with first observation (shouldn't trigger)", func() {
+				var testPod *corev1.Pod
+				BeforeEach(func() {
+					testPod = &corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-pod",
+							Namespace: namespace,
+							Labels: map[string]string{
+								"app": "test",
+							},
+							Annotations: make(map[string]string),
+						},
+						Status: corev1.PodStatus{
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					}
+					// No previous state (first observation)
+					annotation := bpod.NewBoostAnnotation()
+					testPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+					mockBoost.EXPECT().Matches(gomock.Any()).Return(true).AnyTimes()
+					mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
+						DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+							podListOut := list.(*corev1.PodList)
+							*podListOut = corev1.PodList{Items: []corev1.Pod{*testPod}}
+							return nil
+						}).Times(1)
+					// Should not call ShouldActivateForPodConditionTransition (first observation)
+					mockBoost.EXPECT().ShouldActivateForPodConditionTransition(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+					// Should not call ApplyBoostAtRuntime
+					mockBoost.EXPECT().ApplyBoostAtRuntime(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+				})
+				It("should not apply boost on first observation", func() {
+					Expect(err).To(BeNil())
+					Expect(result).To(Equal(ctrl.Result{}))
+				})
+			})
+			When("matching pods with expired activation", func() {
+				var testPod *corev1.Pod
+				BeforeEach(func() {
+					testPod = &corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-pod",
+							Namespace: namespace,
+							Labels: map[string]string{
+								"app": "test",
+							},
+							Annotations: make(map[string]string),
+						},
+						Status: corev1.PodStatus{
+							StartTime: &metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					}
+					// Set expired activation
+					annotation := bpod.NewBoostAnnotation()
+					duration := int64(300) // 5 minutes
+					annotation.SetCurrentActivation(autoscaling.BoostTriggerTypePodCreate, time.Now().Add(-10*time.Minute), "FixedDuration", &duration, nil)
+					testPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+					mockBoost.EXPECT().Matches(gomock.Any()).Return(true).AnyTimes()
+					mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
+						DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+							podListOut := list.(*corev1.PodList)
+							*podListOut = corev1.PodList{Items: []corev1.Pod{*testPod}}
+							return nil
+						}).Times(1)
+					// Mock patch to clear expired activation
+					mockClient.EXPECT().Patch(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).Times(1)
+					// No transitions, so no boost application
+					mockBoost.EXPECT().ShouldActivateForPodConditionTransition(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+					mockBoost.EXPECT().ApplyBoostAtRuntime(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+				})
+				It("should clear expired activation", func() {
+					Expect(err).To(BeNil())
+					Expect(result).To(Equal(ctrl.Result{}))
+				})
+			})
+			When("List fails", func() {
+				BeforeEach(func() {
+					mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
+						Return(fmt.Errorf("list error")).Times(1)
+				})
+				It("should handle list error gracefully", func() {
+					// Error is logged but doesn't fail reconciliation
+					Expect(err).To(BeNil())
+					Expect(result).To(Equal(ctrl.Result{}))
+				})
+			})
+			When("pod without annotation", func() {
+				var testPod *corev1.Pod
+				BeforeEach(func() {
+					testPod = &corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-pod",
+							Namespace: namespace,
+							Labels: map[string]string{
+								"app": "test",
+							},
+							// No annotations
+						},
+						Status: corev1.PodStatus{
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					}
+					mockBoost.EXPECT().Matches(gomock.Any()).Return(true).AnyTimes()
+					mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
+						DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+							podListOut := list.(*corev1.PodList)
+							*podListOut = corev1.PodList{Items: []corev1.Pod{*testPod}}
+							return nil
+						}).Times(1)
+					// Should not call ShouldActivateForPodConditionTransition (no annotation)
+					mockBoost.EXPECT().ShouldActivateForPodConditionTransition(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+					mockBoost.EXPECT().ApplyBoostAtRuntime(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+				})
+				It("should skip pods without annotation", func() {
+					Expect(err).To(BeNil())
+					Expect(result).To(Equal(ctrl.Result{}))
+				})
+			})
+			When("ApplyBoostAtRuntime returns error", func() {
+				var testPod *corev1.Pod
+				BeforeEach(func() {
+					testPod = &corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-pod",
+							Namespace: namespace,
+							Labels: map[string]string{
+								"app": "test",
+							},
+							Annotations: make(map[string]string),
+						},
+						Status: corev1.PodStatus{
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					}
+					// Set initial condition state
+					annotation := bpod.NewBoostAnnotation()
+					annotation.SetLastConditionState("Ready", "False")
+					testPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+					mockBoost.EXPECT().Matches(gomock.Any()).Return(true).AnyTimes()
+					mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
+						DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+							podListOut := list.(*corev1.PodList)
+							*podListOut = corev1.PodList{Items: []corev1.Pod{*testPod}}
+							return nil
+						}).Times(1)
+					// Mock transition matching
+					mockBoost.EXPECT().ShouldActivateForPodConditionTransition("Ready", "False", "True").Return(true).Times(1)
+					// Mock ApplyBoostAtRuntime returning error
+					mockBoost.EXPECT().ApplyBoostAtRuntime(gomock.Any(), gomock.Any(), autoscaling.BoostTriggerTypePodConditionTransition).
+						Return(false, fmt.Errorf("apply boost error")).Times(1)
+				})
+				It("should handle error gracefully and continue processing", func() {
+					// Error is logged but doesn't fail reconciliation
+					Expect(err).To(BeNil())
+					Expect(result).To(Equal(ctrl.Result{}))
+				})
+			})
+			When("ApplyBoostAtRuntime returns false (boost already active)", func() {
+				var testPod *corev1.Pod
+				BeforeEach(func() {
+					testPod = &corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-pod",
+							Namespace: namespace,
+							Labels: map[string]string{
+								"app": "test",
+							},
+							Annotations: make(map[string]string),
+						},
+						Status: corev1.PodStatus{
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					}
+					// Set initial condition state
+					annotation := bpod.NewBoostAnnotation()
+					annotation.SetLastConditionState("Ready", "False")
+					testPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+					mockBoost.EXPECT().Matches(gomock.Any()).Return(true).AnyTimes()
+					mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
+						DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+							podListOut := list.(*corev1.PodList)
+							*podListOut = corev1.PodList{Items: []corev1.Pod{*testPod}}
+							return nil
+						}).Times(1)
+					// Mock transition matching
+					mockBoost.EXPECT().ShouldActivateForPodConditionTransition("Ready", "False", "True").Return(true).Times(1)
+					// Mock ApplyBoostAtRuntime returning false (boost already active - idempotent)
+					mockBoost.EXPECT().ApplyBoostAtRuntime(gomock.Any(), gomock.Any(), autoscaling.BoostTriggerTypePodConditionTransition).
+						Return(false, nil).Times(1)
+				})
+				It("should handle idempotent case gracefully", func() {
+					// Boost already active, so applied=false is expected
+					Expect(err).To(BeNil())
+					Expect(result).To(Equal(ctrl.Result{}))
+				})
+			})
+			When("patch fails when clearing expired activation", func() {
+				var testPod *corev1.Pod
+				BeforeEach(func() {
+					testPod = &corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-pod",
+							Namespace: namespace,
+							Labels: map[string]string{
+								"app": "test",
+							},
+							Annotations: make(map[string]string),
+						},
+						Status: corev1.PodStatus{
+							StartTime: &metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					}
+					// Set expired activation
+					annotation := bpod.NewBoostAnnotation()
+					duration := int64(300) // 5 minutes
+					annotation.SetCurrentActivation(autoscaling.BoostTriggerTypePodCreate, time.Now().Add(-10*time.Minute), "FixedDuration", &duration, nil)
+					testPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+					mockBoost.EXPECT().Matches(gomock.Any()).Return(true).AnyTimes()
+					mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
+						DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+							podListOut := list.(*corev1.PodList)
+							*podListOut = corev1.PodList{Items: []corev1.Pod{*testPod}}
+							return nil
+						}).Times(1)
+					// Mock patch failing to clear expired activation
+					mockClient.EXPECT().Patch(gomock.Any(), gomock.Any(), gomock.Any()).
+						Return(fmt.Errorf("patch error")).Times(1)
+					// Should continue processing even if patch fails
+					mockBoost.EXPECT().ShouldActivateForPodConditionTransition(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+					mockBoost.EXPECT().ApplyBoostAtRuntime(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+				})
+				It("should continue processing even if patch fails", func() {
+					// Error is logged but doesn't fail reconciliation
+					Expect(err).To(BeNil())
+					Expect(result).To(Equal(ctrl.Result{}))
+				})
 			})
 		})
 	})
