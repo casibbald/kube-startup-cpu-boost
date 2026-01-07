@@ -88,6 +88,9 @@ func validate(boost *v1alpha1.StartupCPUBoost) error {
 	if errs := validateTriggers(boost.Spec.Triggers); len(errs) > 0 {
 		allErrs = append(allErrs, errs...)
 	}
+	if errs := validateCooldownPolicy(boost.Spec.Cooldown); len(errs) > 0 {
+		allErrs = append(allErrs, errs...)
+	}
 	if len(allErrs) > 0 {
 		return apierrors.NewInvalid(
 			schema.GroupKind{Group: "autoscaling.x-k8s.io", Kind: "StartupCPUBoost"},
@@ -165,6 +168,32 @@ func validateTriggers(triggers []v1alpha1.BoostTrigger) field.ErrorList {
 					*trigger.ContainerName,
 					"containerName cannot be empty string for ContainerRestart trigger; use \"*\" to match all containers or omit to default to \"*\""))
 			}
+		}
+	}
+	return allErrs
+}
+
+func validateCooldownPolicy(cooldown *v1alpha1.CooldownPolicy) field.ErrorList {
+	var allErrs field.ErrorList
+	if cooldown == nil {
+		// Cooldown is optional, no validation needed if not specified
+		return allErrs
+	}
+	fldPath := field.NewPath("spec").Child("cooldown")
+	// Validate MinIntervalSeconds: must be >= 0 if specified
+	if cooldown.MinIntervalSeconds != nil {
+		if *cooldown.MinIntervalSeconds < 0 {
+			allErrs = append(allErrs, field.Invalid(fldPath.Child("minIntervalSeconds"),
+				*cooldown.MinIntervalSeconds,
+				"minIntervalSeconds must be >= 0"))
+		}
+	}
+	// Validate MaxActivationsPerHour: must be >= 1 if specified
+	if cooldown.MaxActivationsPerHour != nil {
+		if *cooldown.MaxActivationsPerHour < 1 {
+			allErrs = append(allErrs, field.Invalid(fldPath.Child("maxActivationsPerHour"),
+				*cooldown.MaxActivationsPerHour,
+				"maxActivationsPerHour must be >= 1"))
 		}
 	}
 	return allErrs

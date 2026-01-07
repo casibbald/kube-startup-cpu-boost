@@ -613,6 +613,190 @@ var _ = Describe("StartupCPUBoost webhook", func() {
 					Expect(err).NotTo(HaveOccurred())
 				})
 			})
+			When("Startup CPU Boost has cooldown policy", func() {
+				BeforeEach(func() {
+					boost = v1alpha1.StartupCPUBoost{
+						Spec: v1alpha1.StartupCPUBoostSpec{
+							ResourcePolicy: v1alpha1.ResourcePolicy{
+								ContainerPolicies: []v1alpha1.ContainerPolicy{
+									{
+										ContainerName:  "container-one",
+										FixedResources: &v1alpha1.FixedResources{},
+									},
+								},
+							},
+							DurationPolicy: v1alpha1.DurationPolicy{
+								PodCondition: &v1alpha1.PodConditionDurationPolicy{},
+							},
+						},
+					}
+				})
+				When("cooldown policy is valid", func() {
+					When("both fields are specified", func() {
+						BeforeEach(func() {
+							minInterval := int32(300)  // 5 minutes
+							maxActivations := int32(10) // 10 per hour
+							boost.Spec.Cooldown = &v1alpha1.CooldownPolicy{
+								MinIntervalSeconds:    &minInterval,
+								MaxActivationsPerHour: &maxActivations,
+							}
+						})
+						It("does not error on create", func() {
+							_, err = w.ValidateCreate(context.TODO(), &boost)
+							Expect(err).NotTo(HaveOccurred())
+						})
+						It("does not error on update", func() {
+							_, err = w.ValidateUpdate(context.TODO(), nil, &boost)
+							Expect(err).NotTo(HaveOccurred())
+						})
+					})
+					When("only MinIntervalSeconds is specified", func() {
+						BeforeEach(func() {
+							minInterval := int32(300) // 5 minutes
+							boost.Spec.Cooldown = &v1alpha1.CooldownPolicy{
+								MinIntervalSeconds: &minInterval,
+							}
+						})
+						It("does not error on create", func() {
+							_, err = w.ValidateCreate(context.TODO(), &boost)
+							Expect(err).NotTo(HaveOccurred())
+						})
+						It("does not error on update", func() {
+							_, err = w.ValidateUpdate(context.TODO(), nil, &boost)
+							Expect(err).NotTo(HaveOccurred())
+						})
+					})
+					When("only MaxActivationsPerHour is specified", func() {
+						BeforeEach(func() {
+							maxActivations := int32(10) // 10 per hour
+							boost.Spec.Cooldown = &v1alpha1.CooldownPolicy{
+								MaxActivationsPerHour: &maxActivations,
+							}
+						})
+						It("does not error on create", func() {
+							_, err = w.ValidateCreate(context.TODO(), &boost)
+							Expect(err).NotTo(HaveOccurred())
+						})
+						It("does not error on update", func() {
+							_, err = w.ValidateUpdate(context.TODO(), nil, &boost)
+							Expect(err).NotTo(HaveOccurred())
+						})
+					})
+					When("MinIntervalSeconds is zero (no minimum interval)", func() {
+						BeforeEach(func() {
+							minInterval := int32(0)
+							boost.Spec.Cooldown = &v1alpha1.CooldownPolicy{
+								MinIntervalSeconds: &minInterval,
+							}
+						})
+						It("does not error on create", func() {
+							_, err = w.ValidateCreate(context.TODO(), &boost)
+							Expect(err).NotTo(HaveOccurred())
+						})
+						It("does not error on update", func() {
+							_, err = w.ValidateUpdate(context.TODO(), nil, &boost)
+							Expect(err).NotTo(HaveOccurred())
+						})
+					})
+					When("cooldown is nil (optional)", func() {
+						BeforeEach(func() {
+							boost.Spec.Cooldown = nil
+						})
+						It("does not error on create", func() {
+							_, err = w.ValidateCreate(context.TODO(), &boost)
+							Expect(err).NotTo(HaveOccurred())
+						})
+						It("does not error on update", func() {
+							_, err = w.ValidateUpdate(context.TODO(), nil, &boost)
+							Expect(err).NotTo(HaveOccurred())
+						})
+					})
+				})
+				When("cooldown policy is invalid", func() {
+					When("MinIntervalSeconds is negative", func() {
+						BeforeEach(func() {
+							minInterval := int32(-1)
+							boost.Spec.Cooldown = &v1alpha1.CooldownPolicy{
+								MinIntervalSeconds: &minInterval,
+							}
+						})
+						It("errors on create", func() {
+							_, err = w.ValidateCreate(context.TODO(), &boost)
+							Expect(err).To(HaveOccurred())
+							Expect(err.Error()).To(ContainSubstring("minIntervalSeconds"))
+							Expect(err.Error()).To(ContainSubstring("must be >= 0"))
+						})
+						It("errors on update", func() {
+							_, err = w.ValidateUpdate(context.TODO(), nil, &boost)
+							Expect(err).To(HaveOccurred())
+							Expect(err.Error()).To(ContainSubstring("minIntervalSeconds"))
+							Expect(err.Error()).To(ContainSubstring("must be >= 0"))
+						})
+					})
+					When("MaxActivationsPerHour is zero", func() {
+						BeforeEach(func() {
+							maxActivations := int32(0)
+							boost.Spec.Cooldown = &v1alpha1.CooldownPolicy{
+								MaxActivationsPerHour: &maxActivations,
+							}
+						})
+						It("errors on create", func() {
+							_, err = w.ValidateCreate(context.TODO(), &boost)
+							Expect(err).To(HaveOccurred())
+							Expect(err.Error()).To(ContainSubstring("maxActivationsPerHour"))
+							Expect(err.Error()).To(ContainSubstring("must be >= 1"))
+						})
+						It("errors on update", func() {
+							_, err = w.ValidateUpdate(context.TODO(), nil, &boost)
+							Expect(err).To(HaveOccurred())
+							Expect(err.Error()).To(ContainSubstring("maxActivationsPerHour"))
+							Expect(err.Error()).To(ContainSubstring("must be >= 1"))
+						})
+					})
+					When("MaxActivationsPerHour is negative", func() {
+						BeforeEach(func() {
+							maxActivations := int32(-1)
+							boost.Spec.Cooldown = &v1alpha1.CooldownPolicy{
+								MaxActivationsPerHour: &maxActivations,
+							}
+						})
+						It("errors on create", func() {
+							_, err = w.ValidateCreate(context.TODO(), &boost)
+							Expect(err).To(HaveOccurred())
+							Expect(err.Error()).To(ContainSubstring("maxActivationsPerHour"))
+							Expect(err.Error()).To(ContainSubstring("must be >= 1"))
+						})
+						It("errors on update", func() {
+							_, err = w.ValidateUpdate(context.TODO(), nil, &boost)
+							Expect(err).To(HaveOccurred())
+							Expect(err.Error()).To(ContainSubstring("maxActivationsPerHour"))
+							Expect(err.Error()).To(ContainSubstring("must be >= 1"))
+						})
+					})
+					When("both fields are invalid", func() {
+						BeforeEach(func() {
+							minInterval := int32(-1)
+							maxActivations := int32(0)
+							boost.Spec.Cooldown = &v1alpha1.CooldownPolicy{
+								MinIntervalSeconds:    &minInterval,
+								MaxActivationsPerHour: &maxActivations,
+							}
+						})
+						It("errors with both validation messages on create", func() {
+							_, err = w.ValidateCreate(context.TODO(), &boost)
+							Expect(err).To(HaveOccurred())
+							Expect(err.Error()).To(ContainSubstring("minIntervalSeconds"))
+							Expect(err.Error()).To(ContainSubstring("maxActivationsPerHour"))
+						})
+						It("errors with both validation messages on update", func() {
+							_, err = w.ValidateUpdate(context.TODO(), nil, &boost)
+							Expect(err).To(HaveOccurred())
+							Expect(err.Error()).To(ContainSubstring("minIntervalSeconds"))
+							Expect(err.Error()).To(ContainSubstring("maxActivationsPerHour"))
+						})
+					})
+				})
+			})
 		})
 	})
 	When("Defaults StartupCPUBoost", func() {
