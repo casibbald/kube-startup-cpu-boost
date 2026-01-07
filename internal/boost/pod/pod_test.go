@@ -26,6 +26,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apiResource "k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 var _ = Describe("Pod", func() {
@@ -229,6 +230,174 @@ var _ = Describe("Pod", func() {
 			It("returns nil when no current activation", func() {
 				annotation.ActivationState = nil
 				Expect(annotation.GetCurrentActivation()).To(BeNil())
+			})
+		})
+		Describe("IsActivationExpired", func() {
+			var testPod *corev1.Pod
+			BeforeEach(func() {
+				testPod = podTemplate.DeepCopy()
+			})
+			When("no current activation", func() {
+				It("should return false", func() {
+					annotation.ActivationState = nil
+					Expect(annotation.IsActivationExpired(testPod)).To(BeFalse())
+				})
+			})
+			When("activation has invalid start time", func() {
+				BeforeEach(func() {
+					annotation.SetCurrentActivation(
+						autoscaling.BoostTriggerTypeContainerRestart,
+						time.Now(),
+						"FixedDuration",
+						func() *int64 { v := int64(60); return &v }(),
+						nil,
+					)
+					// Manually corrupt the start time
+					annotation.GetActivationState().CurrentActivation.StartTime = "invalid-time"
+				})
+				It("should return true (expired due to invalid format)", func() {
+					Expect(annotation.IsActivationExpired(testPod)).To(BeTrue())
+				})
+			})
+			When("activation has FixedDuration expiry", func() {
+				BeforeEach(func() {
+					annotation.SetCurrentActivation(
+						autoscaling.BoostTriggerTypeContainerRestart,
+						time.Now(),
+						"FixedDuration",
+						func() *int64 { v := int64(60); return &v }(), // 60 seconds
+						nil,
+					)
+				})
+				When("pod has no start time", func() {
+					BeforeEach(func() {
+						testPod.Status.StartTime = nil
+					})
+					It("should return false", func() {
+						Expect(annotation.IsActivationExpired(testPod)).To(BeFalse())
+					})
+				})
+				When("duration has not elapsed", func() {
+					BeforeEach(func() {
+						now := time.Now()
+						testPod.Status.StartTime = &metav1.Time{Time: now}
+					})
+					It("should return false", func() {
+						Expect(annotation.IsActivationExpired(testPod)).To(BeFalse())
+					})
+				})
+				When("duration has elapsed", func() {
+					BeforeEach(func() {
+						now := time.Now().Add(-61 * time.Second)
+						testPod.Status.StartTime = &metav1.Time{Time: now}
+					})
+					It("should return true", func() {
+						Expect(annotation.IsActivationExpired(testPod)).To(BeTrue())
+					})
+				})
+				When("ExpiryFixedDuration is nil", func() {
+					BeforeEach(func() {
+						annotation.SetCurrentActivation(
+							autoscaling.BoostTriggerTypeContainerRestart,
+							time.Now(),
+							"FixedDuration",
+							nil, // No duration set
+							nil,
+						)
+						now := time.Now()
+						testPod.Status.StartTime = &metav1.Time{Time: now}
+					})
+					It("should return false (never expires)", func() {
+						Expect(annotation.IsActivationExpired(testPod)).To(BeFalse())
+					})
+				})
+			})
+			When("activation has PodCondition expiry", func() {
+				BeforeEach(func() {
+					annotation.SetCurrentActivation(
+						autoscaling.BoostTriggerTypeContainerRestart,
+						time.Now(),
+						"PodCondition",
+						nil,
+						&bpod.PodConditionExpiryEntry{
+							Type:   string(corev1.PodReady),
+							Status: string(corev1.ConditionTrue),
+						},
+					)
+				})
+				When("condition is met", func() {
+					BeforeEach(func() {
+						testPod.Status.Conditions = []corev1.PodCondition{
+							{
+								Type:   corev1.PodReady,
+								Status: corev1.ConditionTrue,
+							},
+						}
+					})
+					It("should return true", func() {
+						Expect(annotation.IsActivationExpired(testPod)).To(BeTrue())
+					})
+				})
+				When("condition is not met", func() {
+					BeforeEach(func() {
+						testPod.Status.Conditions = []corev1.PodCondition{
+							{
+								Type:   corev1.PodReady,
+								Status: corev1.ConditionFalse,
+							},
+						}
+					})
+					It("should return false", func() {
+						Expect(annotation.IsActivationExpired(testPod)).To(BeFalse())
+					})
+				})
+				When("condition type not found", func() {
+					BeforeEach(func() {
+						testPod.Status.Conditions = []corev1.PodCondition{
+							{
+								Type:   corev1.PodScheduled,
+								Status: corev1.ConditionTrue,
+							},
+						}
+					})
+					It("should return false", func() {
+						Expect(annotation.IsActivationExpired(testPod)).To(BeFalse())
+					})
+				})
+				When("ExpiryPodCondition is nil", func() {
+					BeforeEach(func() {
+						annotation.SetCurrentActivation(
+							autoscaling.BoostTriggerTypeContainerRestart,
+							time.Now(),
+							"PodCondition",
+							nil,
+							nil, // No condition set
+						)
+						testPod.Status.Conditions = []corev1.PodCondition{
+							{
+								Type:   corev1.PodReady,
+								Status: corev1.ConditionTrue,
+							},
+						}
+					})
+					It("should return false (never expires)", func() {
+						Expect(annotation.IsActivationExpired(testPod)).To(BeFalse())
+					})
+				})
+			})
+			When("activation has unknown expiry type", func() {
+				BeforeEach(func() {
+					annotation.SetCurrentActivation(
+						autoscaling.BoostTriggerTypeContainerRestart,
+						time.Now(),
+						"UnknownType",
+						nil,
+						nil,
+					)
+				})
+				It("should return false (never expires)", func() {
+					Expect(annotation.IsActivationExpired(testPod)).To(BeFalse())
+				})
 			})
 		})
 		Describe("Last activation time", func() {
