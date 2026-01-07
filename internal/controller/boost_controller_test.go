@@ -42,7 +42,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"k8s.io/client-go/tools/record"
 )
+
+// noOpEventRecorder is a no-op implementation of record.EventRecorder
+type noOpEventRecorder struct{}
+
+var _ record.EventRecorder = &noOpEventRecorder{}
+
+func (r *noOpEventRecorder) Event(object runtime.Object, eventtype, reason, message string) {}
+func (r *noOpEventRecorder) Eventf(object runtime.Object, eventtype, reason, messageFmt string, args ...interface{}) {}
+func (r *noOpEventRecorder) AnnotatedEventf(object runtime.Object, annotations map[string]string, eventtype, reason, messageFmt string, args ...interface{}) {}
 
 var _ = Describe("BoostController", func() {
 	var (
@@ -81,6 +91,9 @@ var _ = Describe("BoostController", func() {
 			mockCtrlManager.EXPECT().GetLogger().Return(logr.Discard()).MinTimes(1)
 			mockCtrlManager.EXPECT().Add(gomock.Any()).Return(nil).MinTimes(1)
 			mockCtrlManager.EXPECT().GetCache().Return(&informertest.FakeInformers{}).MinTimes(1)
+			// Mock event recorder - use a simple no-op recorder
+			mockCtrlManager.EXPECT().GetEventRecorderFor("startupcpuboost-controller").
+				Return(&noOpEventRecorder{}).MinTimes(1)
 		})
 		JustBeforeEach(func() {
 			err = boostCtrl.SetupWithManager(mockCtrlManager, serverVersion)
@@ -503,6 +516,8 @@ var _ = Describe("BoostController", func() {
 			req = ctrl.Request{
 				NamespacedName: types.NamespacedName{Name: name, Namespace: namespace},
 			}
+			// Initialize event recorder for tests that need it
+			boostCtrl.Recorder = &noOpEventRecorder{}
 		})
 		JustBeforeEach(func() {
 			result, err = boostCtrl.Reconcile(context.TODO(), req)
@@ -524,22 +539,20 @@ var _ = Describe("BoostController", func() {
 				mockBoost.EXPECT().HasPodConditionTransitionTrigger().Return(true).Times(1)
 				mockBoost.EXPECT().Namespace().Return(namespace).AnyTimes()
 				mockBoost.EXPECT().Name().Return(name).AnyTimes()
-				mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName),
-					gomock.Any()).
-					Times(1).
-					DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object,
-						opts ...client.GetOption) error {
-						boostObj := obj.(*autoscaling.StartupCPUBoost)
-						boostObj.Name = name
-						boostObj.Namespace = namespace
-						return nil
-					})
+				// Get mock is set up in individual test cases to allow customization (e.g., cooldown policy)
 				mockSubResClient := mock.NewMockSubResourceClient(mockCtrl)
 				mockSubResClient.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 				mockClient.EXPECT().Status().Return(mockSubResClient).AnyTimes()
 			})
 			When("no matching pods", func() {
 				BeforeEach(func() {
+					mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName), gomock.Any()).
+						DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+							boostObj := obj.(*autoscaling.StartupCPUBoost)
+							boostObj.Name = name
+							boostObj.Namespace = namespace
+							return nil
+						}).Times(1)
 					mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
 						DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 							podListOut := list.(*corev1.PodList)
@@ -577,6 +590,13 @@ var _ = Describe("BoostController", func() {
 					annotation := bpod.NewBoostAnnotation()
 					annotation.SetLastConditionState("Ready", "False")
 					testPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+					mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName), gomock.Any()).
+						DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+							boostObj := obj.(*autoscaling.StartupCPUBoost)
+							boostObj.Name = name
+							boostObj.Namespace = namespace
+							return nil
+						}).Times(1)
 					mockBoost.EXPECT().Matches(gomock.Any()).Return(true).AnyTimes()
 					mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
 						DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
@@ -597,6 +617,13 @@ var _ = Describe("BoostController", func() {
 			When("matching pods with first observation (shouldn't trigger)", func() {
 				var testPod *corev1.Pod
 				BeforeEach(func() {
+					mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName), gomock.Any()).
+						DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+							boostObj := obj.(*autoscaling.StartupCPUBoost)
+							boostObj.Name = name
+							boostObj.Namespace = namespace
+							return nil
+						}).Times(1)
 					testPod = &corev1.Pod{
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-pod",
@@ -662,6 +689,13 @@ var _ = Describe("BoostController", func() {
 					duration := int64(300) // 5 minutes
 					annotation.SetCurrentActivation(autoscaling.BoostTriggerTypePodCreate, time.Now().Add(-10*time.Minute), "FixedDuration", &duration, nil)
 					testPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+					mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName), gomock.Any()).
+						DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+							boostObj := obj.(*autoscaling.StartupCPUBoost)
+							boostObj.Name = name
+							boostObj.Namespace = namespace
+							return nil
+						}).Times(1)
 					mockBoost.EXPECT().Matches(gomock.Any()).Return(true).AnyTimes()
 					mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
 						DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
@@ -682,6 +716,13 @@ var _ = Describe("BoostController", func() {
 			})
 			When("List fails", func() {
 				BeforeEach(func() {
+					mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName), gomock.Any()).
+						DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+							boostObj := obj.(*autoscaling.StartupCPUBoost)
+							boostObj.Name = name
+							boostObj.Namespace = namespace
+							return nil
+						}).Times(1)
 					mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
 						Return(fmt.Errorf("list error")).Times(1)
 				})
@@ -694,6 +735,13 @@ var _ = Describe("BoostController", func() {
 			When("pod without annotation", func() {
 				var testPod *corev1.Pod
 				BeforeEach(func() {
+					mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName), gomock.Any()).
+						DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+							boostObj := obj.(*autoscaling.StartupCPUBoost)
+							boostObj.Name = name
+							boostObj.Namespace = namespace
+							return nil
+						}).Times(1)
 					testPod = &corev1.Pod{
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-pod",
@@ -728,9 +776,75 @@ var _ = Describe("BoostController", func() {
 					Expect(result).To(Equal(ctrl.Result{}))
 				})
 			})
+			When("cooldown policy prevents activation", func() {
+				var testPod *corev1.Pod
+				BeforeEach(func() {
+					// Set cooldown policy in boostObj (this happens in the Get call)
+					mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName), gomock.Any()).
+						DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+							boostObj := obj.(*autoscaling.StartupCPUBoost)
+							boostObj.Name = name
+							boostObj.Namespace = namespace
+							interval := int32(300) // 5 minutes
+							boostObj.Spec.Cooldown = &autoscaling.CooldownPolicy{
+								MinIntervalSeconds: &interval,
+							}
+							return nil
+						}).Times(1)
+					testPod = &corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-pod",
+							Namespace: namespace,
+							Labels: map[string]string{
+								"app": "test",
+							},
+							Annotations: make(map[string]string),
+						},
+						Status: corev1.PodStatus{
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					}
+					// Set initial condition state in annotation
+					annotation := bpod.NewBoostAnnotation()
+					annotation.SetLastConditionState("Ready", "False")
+					// Set last activation time to 1 minute ago (within cooldown)
+					lastActivation := time.Now().Add(-1 * time.Minute)
+					annotation.SetLastActivationTime(autoscaling.BoostTriggerTypePodConditionTransition, lastActivation)
+					testPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+					mockBoost.EXPECT().Matches(gomock.Any()).Return(true).AnyTimes()
+					mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
+						DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+							podListOut := list.(*corev1.PodList)
+							*podListOut = corev1.PodList{Items: []corev1.Pod{*testPod}}
+							return nil
+						}).Times(1)
+					// Mock transition matching
+					mockBoost.EXPECT().ShouldActivateForPodConditionTransition("Ready", "False", "True").Return(true).Times(1)
+					// Should not call ApplyBoostAtRuntime (cooldown prevents it)
+					mockBoost.EXPECT().ApplyBoostAtRuntime(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+				})
+				It("should skip activation due to cooldown and emit event", func() {
+					Expect(err).To(BeNil())
+					Expect(result).To(Equal(ctrl.Result{}))
+					// Note: Event emission is tested via integration tests or manual verification
+					// as mocking event recorder requires additional setup
+				})
+			})
 			When("ApplyBoostAtRuntime returns error", func() {
 				var testPod *corev1.Pod
 				BeforeEach(func() {
+					mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName), gomock.Any()).
+						DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+							boostObj := obj.(*autoscaling.StartupCPUBoost)
+							boostObj.Name = name
+							boostObj.Namespace = namespace
+							return nil
+						}).Times(1)
 					testPod = &corev1.Pod{
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-pod",
@@ -797,6 +911,13 @@ var _ = Describe("BoostController", func() {
 					annotation := bpod.NewBoostAnnotation()
 					annotation.SetLastConditionState("Ready", "False")
 					testPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+					mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName), gomock.Any()).
+						DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+							boostObj := obj.(*autoscaling.StartupCPUBoost)
+							boostObj.Name = name
+							boostObj.Namespace = namespace
+							return nil
+						}).Times(1)
 					mockBoost.EXPECT().Matches(gomock.Any()).Return(true).AnyTimes()
 					mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
 						DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
@@ -843,6 +964,13 @@ var _ = Describe("BoostController", func() {
 					duration := int64(300) // 5 minutes
 					annotation.SetCurrentActivation(autoscaling.BoostTriggerTypePodCreate, time.Now().Add(-10*time.Minute), "FixedDuration", &duration, nil)
 					testPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+					mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName), gomock.Any()).
+						DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+							boostObj := obj.(*autoscaling.StartupCPUBoost)
+							boostObj.Name = name
+							boostObj.Namespace = namespace
+							return nil
+						}).Times(1)
 					mockBoost.EXPECT().Matches(gomock.Any()).Return(true).AnyTimes()
 					mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
 						DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {

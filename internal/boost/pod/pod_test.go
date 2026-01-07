@@ -893,5 +893,156 @@ var _ = Describe("Pod", func() {
 				Expect(transitions).To(BeEmpty())
 			})
 		})
+		Describe("Cooldown Policy Checks", func() {
+			var (
+				annotation *bpod.BoostPodAnnotation
+				triggerType autoscaling.BoostTriggerType
+			)
+			BeforeEach(func() {
+				annotation = bpod.NewBoostAnnotation()
+				triggerType = autoscaling.BoostTriggerTypePodConditionTransition
+			})
+			When("no cooldown policy", func() {
+				It("should not skip activation", func() {
+					shouldSkip, reason := annotation.ShouldSkipDueToCooldown(triggerType, nil)
+					Expect(shouldSkip).To(BeFalse())
+					Expect(reason).To(BeEmpty())
+				})
+			})
+			When("minimum interval cooldown", func() {
+				It("should skip if interval not met", func() {
+					interval := int32(300) // 5 minutes
+					cooldownPolicy := &autoscaling.CooldownPolicy{
+						MinIntervalSeconds: &interval,
+					}
+					// Set last activation time to 1 minute ago (within cooldown)
+					lastActivation := time.Now().Add(-1 * time.Minute)
+					annotation.SetLastActivationTime(triggerType, lastActivation)
+					shouldSkip, reason := annotation.ShouldSkipDueToCooldown(triggerType, cooldownPolicy)
+					Expect(shouldSkip).To(BeTrue())
+					Expect(reason).To(ContainSubstring("minimum interval not met"))
+				})
+				It("should not skip if interval met", func() {
+					interval := int32(300) // 5 minutes
+					cooldownPolicy := &autoscaling.CooldownPolicy{
+						MinIntervalSeconds: &interval,
+					}
+					// Set last activation time to 10 minutes ago (cooldown expired)
+					lastActivation := time.Now().Add(-10 * time.Minute)
+					annotation.SetLastActivationTime(triggerType, lastActivation)
+					shouldSkip, reason := annotation.ShouldSkipDueToCooldown(triggerType, cooldownPolicy)
+					Expect(shouldSkip).To(BeFalse())
+					Expect(reason).To(BeEmpty())
+				})
+				It("should not skip if no previous activation", func() {
+					interval := int32(300) // 5 minutes
+					cooldownPolicy := &autoscaling.CooldownPolicy{
+						MinIntervalSeconds: &interval,
+					}
+					// No previous activation time set
+					shouldSkip, reason := annotation.ShouldSkipDueToCooldown(triggerType, cooldownPolicy)
+					Expect(shouldSkip).To(BeFalse())
+					Expect(reason).To(BeEmpty())
+				})
+			})
+			When("maximum activations per hour cooldown", func() {
+				It("should skip if limit exceeded", func() {
+					maxActivations := int32(3)
+					cooldownPolicy := &autoscaling.CooldownPolicy{
+						MaxActivationsPerHour: &maxActivations,
+					}
+					// Add 3 activations to history (at limit)
+					now := time.Now()
+					for i := 0; i < 3; i++ {
+						annotation.AddActivationToHistory(now.Add(time.Duration(-i*10) * time.Minute))
+					}
+					shouldSkip, reason := annotation.ShouldSkipDueToCooldown(triggerType, cooldownPolicy)
+					Expect(shouldSkip).To(BeTrue())
+					Expect(reason).To(ContainSubstring("maximum activations per hour exceeded"))
+					Expect(reason).To(ContainSubstring("3/3"))
+				})
+				It("should not skip if under limit", func() {
+					maxActivations := int32(3)
+					cooldownPolicy := &autoscaling.CooldownPolicy{
+						MaxActivationsPerHour: &maxActivations,
+					}
+					// Add 2 activations to history (under limit)
+					now := time.Now()
+					annotation.AddActivationToHistory(now.Add(-10 * time.Minute))
+					annotation.AddActivationToHistory(now.Add(-20 * time.Minute))
+					shouldSkip, reason := annotation.ShouldSkipDueToCooldown(triggerType, cooldownPolicy)
+					Expect(shouldSkip).To(BeFalse())
+					Expect(reason).To(BeEmpty())
+				})
+				It("should not skip if no activations in history", func() {
+					maxActivations := int32(3)
+					cooldownPolicy := &autoscaling.CooldownPolicy{
+						MaxActivationsPerHour: &maxActivations,
+					}
+					// No activation history
+					shouldSkip, reason := annotation.ShouldSkipDueToCooldown(triggerType, cooldownPolicy)
+					Expect(shouldSkip).To(BeFalse())
+					Expect(reason).To(BeEmpty())
+				})
+			})
+			When("both cooldown policies configured", func() {
+				It("should skip if minimum interval not met (checked first)", func() {
+					interval := int32(300) // 5 minutes
+					maxActivations := int32(10)
+					cooldownPolicy := &autoscaling.CooldownPolicy{
+						MinIntervalSeconds:    &interval,
+						MaxActivationsPerHour: &maxActivations,
+					}
+					// Set last activation time to 1 minute ago (within cooldown)
+					lastActivation := time.Now().Add(-1 * time.Minute)
+					annotation.SetLastActivationTime(triggerType, lastActivation)
+					// Add many activations (would exceed max if checked)
+					now := time.Now()
+					for i := 0; i < 15; i++ {
+						annotation.AddActivationToHistory(now.Add(time.Duration(-i*2) * time.Minute))
+					}
+					shouldSkip, reason := annotation.ShouldSkipDueToCooldown(triggerType, cooldownPolicy)
+					Expect(shouldSkip).To(BeTrue())
+					Expect(reason).To(ContainSubstring("minimum interval not met"))
+				})
+				It("should skip if max activations exceeded (when interval met)", func() {
+					interval := int32(300) // 5 minutes
+					maxActivations := int32(3)
+					cooldownPolicy := &autoscaling.CooldownPolicy{
+						MinIntervalSeconds:    &interval,
+						MaxActivationsPerHour: &maxActivations,
+					}
+					// Set last activation time to 10 minutes ago (interval met)
+					lastActivation := time.Now().Add(-10 * time.Minute)
+					annotation.SetLastActivationTime(triggerType, lastActivation)
+					// Add 3 activations to history (at limit)
+					now := time.Now()
+					for i := 0; i < 3; i++ {
+						annotation.AddActivationToHistory(now.Add(time.Duration(-i*10) * time.Minute))
+					}
+					shouldSkip, reason := annotation.ShouldSkipDueToCooldown(triggerType, cooldownPolicy)
+					Expect(shouldSkip).To(BeTrue())
+					Expect(reason).To(ContainSubstring("maximum activations per hour exceeded"))
+				})
+				It("should not skip if both policies satisfied", func() {
+					interval := int32(300) // 5 minutes
+					maxActivations := int32(10)
+					cooldownPolicy := &autoscaling.CooldownPolicy{
+						MinIntervalSeconds:    &interval,
+						MaxActivationsPerHour: &maxActivations,
+					}
+					// Set last activation time to 10 minutes ago (interval met)
+					lastActivation := time.Now().Add(-10 * time.Minute)
+					annotation.SetLastActivationTime(triggerType, lastActivation)
+					// Add 2 activations to history (under limit)
+					now := time.Now()
+					annotation.AddActivationToHistory(now.Add(-10 * time.Minute))
+					annotation.AddActivationToHistory(now.Add(-20 * time.Minute))
+					shouldSkip, reason := annotation.ShouldSkipDueToCooldown(triggerType, cooldownPolicy)
+					Expect(shouldSkip).To(BeFalse())
+					Expect(reason).To(BeEmpty())
+				})
+			})
+		})
 	})
 })
