@@ -216,6 +216,18 @@ func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForContainerRestart(ctx co
 			continue
 		}
 
+		// Check if current activation has expired and clear it if so (idempotent behavior)
+		if annotation.IsActivationExpired(pod) {
+			log.V(5).Info("boost activation expired, clearing active state", "pod", pod.Name)
+			annotation.ClearCurrentActivation()
+			// Update pod annotation to persist the cleared state
+			labelsPatch := bpod.NewApplyBoostLabelsPatch(annotation, boost.Name())
+			if err := r.Client.Patch(ctx, pod, labelsPatch); err != nil {
+				log.Error(err, "failed to clear expired boost activation", "pod", pod.Name)
+				// Continue processing even if patch fails
+			}
+		}
+
 		// Update restart counts and get containers that restarted
 		incrementedContainers := annotation.UpdateLastRestartCounts(pod)
 		if len(incrementedContainers) == 0 {
@@ -240,6 +252,8 @@ func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForContainerRestart(ctx co
 			}
 			if applied {
 				log.Info("runtime boost applied successfully", "pod", pod.Name)
+			} else {
+				log.V(5).Info("boost not applied (likely already active)", "pod", pod.Name)
 			}
 		}
 	}

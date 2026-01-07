@@ -292,6 +292,53 @@ func (a *BoostPodAnnotation) GetCurrentActivation() *ActivationStateEntry {
 	return a.ActivationState.CurrentActivation
 }
 
+// IsActivationExpired checks if the stored activation has expired based on the pod's current state
+// This is used to determine if the active boost state should be cleared
+func (a *BoostPodAnnotation) IsActivationExpired(pod *corev1.Pod) bool {
+	activation := a.GetCurrentActivation()
+	if activation == nil {
+		return false // No active activation
+	}
+
+	// Validate start time format (but we don't use it for expiry calculation)
+	_, err := time.Parse(time.RFC3339, activation.StartTime)
+	if err != nil {
+		// Invalid start time, consider expired
+		return true
+	}
+
+	// Check expiry based on type
+	switch activation.ExpiryConditionType {
+	case "FixedDuration":
+		if activation.ExpiryFixedDuration == nil {
+			return false // No expiry duration set, never expires
+		}
+		// Fixed duration is based on pod scheduled time (not activation start time)
+		// This matches the behavior of BoostActivation.IsExpired
+		if pod.Status.StartTime == nil {
+			return false
+		}
+		elapsed := time.Since(pod.Status.StartTime.Time)
+		duration := time.Duration(*activation.ExpiryFixedDuration) * time.Second
+		return elapsed >= duration
+	case "PodCondition":
+		if activation.ExpiryPodCondition == nil {
+			return false // No expiry condition set, never expires
+		}
+		// Check if pod condition matches
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == corev1.PodConditionType(activation.ExpiryPodCondition.Type) {
+				expectedStatus := corev1.ConditionStatus(activation.ExpiryPodCondition.Status)
+				return condition.Status == expectedStatus
+			}
+		}
+		return false // Condition not found or doesn't match
+	default:
+		// Unknown expiry type, don't expire
+		return false
+	}
+}
+
 // GetLastActivationTime returns the last activation time for a given trigger type
 func (a *BoostPodAnnotation) GetLastActivationTime(triggerType autoscaling.BoostTriggerType) (time.Time, bool) {
 	state := a.GetActivationState()

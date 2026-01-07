@@ -18,6 +18,7 @@ import (
 	"context"
 
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	autoscaling "github.com/google/kube-startup-cpu-boost/api/v1alpha1"
@@ -392,6 +393,92 @@ var _ = Describe("BoostController", func() {
 			})
 			It("should handle list error gracefully", func() {
 				// Error is logged but doesn't fail reconciliation
+				Expect(err).To(BeNil())
+				Expect(result).To(Equal(ctrl.Result{}))
+			})
+		})
+		When("boost has expired activation that needs clearing", func() {
+			var (
+				totalContainerBoosts  = 10
+				activeContainerBoosts = 5
+				mockSubResClient      *mock.MockSubResourceClient
+			)
+			BeforeEach(func() {
+				stats := boost.StartupCPUBoostStats{
+					TotalContainerBoosts:  totalContainerBoosts,
+					ActiveContainerBoosts: activeContainerBoosts,
+				}
+				mockManager.EXPECT().GetRegularCPUBoost(gomock.Any(), gomock.Eq(name),
+					gomock.Eq(namespace)).Times(1).Return(mockBoost, true)
+				mockBoost.EXPECT().Stats().Times(1).Return(stats)
+				mockBoost.EXPECT().HasContainerRestartTrigger().Return(true).Times(1)
+				mockBoost.EXPECT().Namespace().Return(namespace).AnyTimes()
+				mockBoost.EXPECT().Name().Return(name).AnyTimes()
+				mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName),
+					gomock.Any()).
+					Times(1).
+					DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object,
+						opts ...client.GetOption) error {
+						boostObj := obj.(*autoscaling.StartupCPUBoost)
+						boostObj.Name = name
+						boostObj.Namespace = namespace
+						return nil
+					})
+				// Mock pod list with pod that has expired activation
+				mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+						podListOut := list.(*corev1.PodList)
+						annotation := bpod.NewBoostAnnotation()
+						// Set expired activation (60 seconds ago, pod started 61 seconds ago)
+						now := time.Now()
+						expiredTime := int64(60)
+						annotation.SetCurrentActivation(
+							autoscaling.BoostTriggerTypeContainerRestart,
+							now.Add(-65*time.Second),
+							"FixedDuration",
+							&expiredTime,
+							nil,
+						)
+						*podListOut = corev1.PodList{
+							Items: []corev1.Pod{
+								{
+									ObjectMeta: metav1.ObjectMeta{
+										Name:      "pod-1",
+										Namespace: namespace,
+										Annotations: map[string]string{
+											bpod.BoostAnnotationKey: annotation.ToJSON(),
+										},
+									},
+									Status: corev1.PodStatus{
+										StartTime: &metav1.Time{Time: now.Add(-61 * time.Second)},
+										ContainerStatuses: []corev1.ContainerStatus{
+											{
+												Name:         "container-one",
+												RestartCount: 1,
+											},
+										},
+									},
+								},
+							},
+						}
+						return nil
+					}).Times(1)
+				mockBoost.EXPECT().Matches(gomock.Any()).Return(true).AnyTimes()
+				// After clearing expired activation, check if boost should activate for restarted container
+				mockBoost.EXPECT().ShouldActivateForContainerRestart("container-one").Return(true).AnyTimes()
+				// Patch to clear expired activation
+				mockClient.EXPECT().Patch(gomock.Any(), gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+						return nil
+					}).Times(1)
+				// After clearing, boost will try to apply (but it's already applied, so idempotent check will skip)
+				mockBoost.EXPECT().ApplyBoostAtRuntime(gomock.Any(), gomock.Any(), autoscaling.BoostTriggerTypeContainerRestart).
+					Return(false, nil).AnyTimes() // Returns false because boost is already active (idempotent)
+				mockSubResClient = mock.NewMockSubResourceClient(mockCtrl)
+				mockSubResClient.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+				mockClient.EXPECT().Status().Return(mockSubResClient).AnyTimes()
+			})
+			It("should clear expired activation", func() {
 				Expect(err).To(BeNil())
 				Expect(result).To(Equal(ctrl.Result{}))
 			})
