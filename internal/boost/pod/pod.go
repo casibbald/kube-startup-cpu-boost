@@ -397,6 +397,39 @@ func (a *BoostPodAnnotation) GetActivationHistoryCount() int {
 	return len(a.ActivationState.ActivationHistory)
 }
 
+// ShouldSkipDueToCooldown checks if activation should be skipped due to cooldown policy
+// Returns (shouldSkip, reason) where reason is empty if shouldSkip is false
+func (a *BoostPodAnnotation) ShouldSkipDueToCooldown(triggerType autoscaling.BoostTriggerType, cooldownPolicy *autoscaling.CooldownPolicy) (bool, string) {
+	if cooldownPolicy == nil {
+		return false, ""
+	}
+
+	now := time.Now()
+
+	// Check minimum interval
+	if cooldownPolicy.MinIntervalSeconds != nil && *cooldownPolicy.MinIntervalSeconds > 0 {
+		lastActivationTime, exists := a.GetLastActivationTime(triggerType)
+		if exists {
+			elapsed := now.Sub(lastActivationTime)
+			minInterval := time.Duration(*cooldownPolicy.MinIntervalSeconds) * time.Second
+			if elapsed < minInterval {
+				remaining := minInterval - elapsed
+				return true, fmt.Sprintf("minimum interval not met (remaining: %v)", remaining.Round(time.Second))
+			}
+		}
+	}
+
+	// Check maximum activations per hour
+	if cooldownPolicy.MaxActivationsPerHour != nil && *cooldownPolicy.MaxActivationsPerHour > 0 {
+		activationCount := a.GetActivationHistoryCount()
+		if activationCount >= int(*cooldownPolicy.MaxActivationsPerHour) {
+			return true, fmt.Sprintf("maximum activations per hour exceeded (%d/%d)", activationCount, *cooldownPolicy.MaxActivationsPerHour)
+		}
+	}
+
+	return false, ""
+}
+
 // GetLastRestartCount returns the last seen restartCount for a container
 func (a *BoostPodAnnotation) GetLastRestartCount(containerName string) (int32, bool) {
 	state := a.GetActivationState()
