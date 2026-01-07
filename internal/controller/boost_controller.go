@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"k8s.io/client-go/tools/record"
 
 	"github.com/go-logr/logr"
 	autoscaling "github.com/google/kube-startup-cpu-boost/api/v1alpha1"
@@ -53,6 +54,7 @@ type StartupCPUBoostReconciler struct {
 	Log              logr.Logger
 	Manager          boost.Manager
 	LegacyRevertMode bool
+	Recorder         record.EventRecorder
 }
 
 //+kubebuilder:rbac:groups=autoscaling.x-k8s.io,resources=startupcpuboosts,verbs=get;list;watch;create;update;patch;delete
@@ -98,7 +100,7 @@ func (r *StartupCPUBoostReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 		// Check for PodConditionTransition triggers and apply runtime boosts if needed
 		if boost.HasPodConditionTransitionTrigger() {
-			if err := r.applyRuntimeBoostsForPodConditionTransition(ctx, boost, log); err != nil {
+			if err := r.applyRuntimeBoostsForPodConditionTransition(ctx, boost, boostObj.Spec.Cooldown, log); err != nil {
 				log.Error(err, "failed to apply runtime boosts for PodConditionTransition triggers")
 				// Don't fail reconciliation, just log the error
 			}
@@ -129,6 +131,7 @@ func (r *StartupCPUBoostReconciler) SetupWithManager(mgr ctrl.Manager,
 		return err
 	}
 	r.LegacyRevertMode = shouldUseLegacyRevertMode(serverVersion)
+	r.Recorder = mgr.GetEventRecorderFor("startupcpuboost-controller")
 	ctrl.Log.WithName("boost-controller-setup").WithValues("legacyRevertMode", r.LegacyRevertMode).
 		V(5).Info("setting legacy revert mode")
 	return ctrl.NewControllerManagedBy(mgr).
@@ -271,7 +274,7 @@ func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForContainerRestart(ctx co
 
 // applyRuntimeBoostsForPodConditionTransition applies runtime boosts to pods that have PodConditionTransition triggers
 // This is called during reconciliation when PodConditionTransition triggers are detected
-func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForPodConditionTransition(ctx context.Context, boost boost.StartupCPUBoost, log logr.Logger) error {
+func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForPodConditionTransition(ctx context.Context, boost boost.StartupCPUBoost, cooldownPolicy *autoscaling.CooldownPolicy, log logr.Logger) error {
 	// List all pods in the boost namespace
 	podList := &corev1.PodList{}
 	if err := r.Client.List(ctx, podList, client.InNamespace(boost.Namespace())); err != nil {
@@ -332,8 +335,18 @@ func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForPodConditionTransition(
 		}
 
 		if shouldActivate {
+			// Check cooldown policy before applying boost
+			triggerType := autoscaling.BoostTriggerTypePodConditionTransition
+			shouldSkip, reason := annotation.ShouldSkipDueToCooldown(triggerType, cooldownPolicy)
+			if shouldSkip {
+				log.Info("skipping boost activation due to cooldown", "pod", pod.Name, "reason", reason)
+				// Emit event for skipped activation
+				r.Recorder.Event(pod, corev1.EventTypeWarning, "BoostSkippedCooldown", fmt.Sprintf("Boost activation skipped for pod %s: %s", pod.Name, reason))
+				continue
+			}
+
 			log.Info("applying runtime boost for PodConditionTransition trigger", "pod", pod.Name, "namespace", pod.Namespace)
-			applied, err := boost.ApplyBoostAtRuntime(ctx, pod, autoscaling.BoostTriggerTypePodConditionTransition)
+			applied, err := boost.ApplyBoostAtRuntime(ctx, pod, triggerType)
 			if err != nil {
 				log.Error(err, "failed to apply runtime boost", "pod", pod.Name)
 				continue
