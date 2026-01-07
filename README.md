@@ -247,6 +247,35 @@ spec:
 **Note:** All three fields (`conditionType`, `fromStatus`, `toStatus`) are
 required when using `PodConditionTransition` trigger type.
 
+#### Initial Condition Handling
+
+The `PodConditionTransition` trigger only activates on actual condition
+transitions, not on initial state observations. This prevents false positives
+when pods are created with conditions already in their target state.
+
+**Behavior:**
+
+* First condition observation is stored but does not trigger boost
+* Only transitions from a previous state trigger boost activation
+* Example: If a pod starts with `Ready=True`, it will not trigger a boost
+  configured for `Ready False → True` until the condition transitions from
+  `False` to `True`
+* If you need boost on pod creation, combine with `PodCreate` trigger
+
+#### Example: Pod starts with Ready=True
+
+```yaml
+# Pod created with Ready=True initially
+# This will NOT trigger boost (first observation)
+# Boost will only trigger when Ready transitions False → True later
+spec:
+  triggers:
+    - type: PodConditionTransition
+      conditionType: Ready
+      fromStatus: "False"
+      toStatus: "True"
+```
+
 ## Configuration
 
 Kube Startup CPU Boost operator can be configured with environmental variables.

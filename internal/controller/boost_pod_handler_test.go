@@ -324,9 +324,11 @@ var _ = Describe("BoostPodHandler", func() {
 								Status: corev1.ConditionFalse,
 							},
 						}
-						// First transition doesn't match, second does
-						boostMock.EXPECT().ShouldActivateForPodConditionTransition("Ready", "False", "True").Return(false).Times(1)
-						boostMock.EXPECT().ShouldActivateForPodConditionTransition("PodScheduled", "True", "False").Return(true).Times(1)
+						// Map iteration order is non-deterministic, so we need to handle both orders
+						// One transition doesn't match, the other does
+						// Use AnyTimes() to allow for non-deterministic iteration order
+						boostMock.EXPECT().ShouldActivateForPodConditionTransition("Ready", "False", "True").Return(false).AnyTimes()
+						boostMock.EXPECT().ShouldActivateForPodConditionTransition("PodScheduled", "True", "False").Return(true).AnyTimes()
 					})
 					It("should queue reconciliation when any transition matches", func() {
 						Expect(wq.Len()).To(Equal(1))
