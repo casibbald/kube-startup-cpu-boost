@@ -171,25 +171,7 @@ jobs:
       - name: Test controller reconciliation
         run: |
           echo "Creating test StartupCPUBoost resource..."
-          cat <<EOF | kubectl apply -f -
-          apiVersion: autoscaling.x-k8s.io/v1alpha1
-          kind: StartupCPUBoost
-          metadata:
-            name: test-boost
-            namespace: default
-          spec:
-            selector:
-              matchLabels:
-                app: test
-            containerPolicy:
-              containers:
-              - name: test-container
-                cpuBoost:
-                  requests: "2"
-                  limits: "4"
-            trigger:
-              podCreate: {}
-          EOF
+          kubectl apply -f config/tilt/test-startupcpuboost.yaml
           
           sleep 5
           
