@@ -380,31 +380,57 @@ func (a *BoostPodAnnotation) SetLastActivationTime(triggerType autoscaling.Boost
 
 // AddActivationToHistory adds an activation timestamp to the history
 // and removes activations older than 1 hour
+// Limits annotation size to max 100 timestamps to prevent unbounded growth
 func (a *BoostPodAnnotation) AddActivationToHistory(activationTime time.Time) {
 	state := a.GetActivationState()
 	now := time.Now()
 	cutoffTime := now.Add(-1 * time.Hour)
+	const maxHistorySize = 100
 
 	// Add new activation
 	state.ActivationHistory = append(state.ActivationHistory, activationTime.Format(time.RFC3339))
 
-	// Remove activations older than 1 hour
+	// Remove activations older than 1 hour and malformed timestamps
 	filtered := make([]string, 0, len(state.ActivationHistory))
 	for _, timeStr := range state.ActivationHistory {
 		t, err := time.Parse(time.RFC3339, timeStr)
-		if err == nil && t.After(cutoffTime) {
+		// Only keep valid timestamps that are within the last hour
+		// Skip malformed timestamps and future timestamps (clock skew protection)
+		if err == nil && t.After(cutoffTime) && !t.After(now) {
 			filtered = append(filtered, timeStr)
 		}
 	}
 	state.ActivationHistory = filtered
+
+	// Limit annotation size to prevent unbounded growth
+	// If we exceed maxHistorySize, keep only the most recent entries
+	if len(state.ActivationHistory) > maxHistorySize {
+		// Keep the most recent maxHistorySize entries
+		state.ActivationHistory = state.ActivationHistory[len(state.ActivationHistory)-maxHistorySize:]
+	}
 }
 
 // GetActivationHistoryCount returns the number of activations in the last hour
+// Defensively filters out old, malformed, or future timestamps
 func (a *BoostPodAnnotation) GetActivationHistoryCount() int {
 	if a.ActivationState == nil || a.ActivationState.ActivationHistory == nil {
 		return 0
 	}
-	return len(a.ActivationState.ActivationHistory)
+	now := time.Now()
+	cutoffTime := now.Add(-1 * time.Hour)
+
+	// Defensively filter timestamps to handle edge cases:
+	// - Old timestamps that weren't cleaned up
+	// - Malformed timestamps
+	// - Future timestamps (clock skew)
+	count := 0
+	for _, timeStr := range a.ActivationState.ActivationHistory {
+		t, err := time.Parse(time.RFC3339, timeStr)
+		if err == nil && t.After(cutoffTime) && !t.After(now) {
+			count++
+		}
+	}
+	return count
 }
 
 // ShouldSkipDueToCooldown checks if activation should be skipped due to cooldown policy

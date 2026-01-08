@@ -466,10 +466,65 @@ var _ = Describe("Pod", func() {
 			})
 			It("tracks multiple activations", func() {
 				now := time.Now()
+				// Add activations in the past (within last hour) to avoid future timestamp filtering
 				for i := 0; i < 5; i++ {
-					annotation.AddActivationToHistory(now.Add(time.Duration(i) * time.Minute))
+					annotation.AddActivationToHistory(now.Add(-time.Duration(i) * time.Minute))
 				}
 				Expect(annotation.GetActivationHistoryCount()).To(Equal(5))
+			})
+			It("filters out malformed timestamps in history", func() {
+				now := time.Now()
+				state := annotation.GetActivationState()
+				// Add valid timestamp
+				annotation.AddActivationToHistory(now)
+				// Manually add malformed timestamp
+				state.ActivationHistory = append(state.ActivationHistory, "invalid-timestamp")
+				// GetActivationHistoryCount should filter out malformed timestamp
+				Expect(annotation.GetActivationHistoryCount()).To(Equal(1))
+			})
+			It("filters out future timestamps in history (clock skew protection)", func() {
+				now := time.Now()
+				state := annotation.GetActivationState()
+				// Add valid timestamp
+				annotation.AddActivationToHistory(now)
+				// Manually add future timestamp (simulating clock skew)
+				futureTime := now.Add(1 * time.Hour)
+				state.ActivationHistory = append(state.ActivationHistory, futureTime.Format(time.RFC3339))
+				// GetActivationHistoryCount should filter out future timestamp
+				Expect(annotation.GetActivationHistoryCount()).To(Equal(1))
+			})
+			It("filters out future timestamps when adding to history", func() {
+				now := time.Now()
+				futureTime := now.Add(1 * time.Hour)
+				// AddActivationToHistory should reject future timestamps
+				annotation.AddActivationToHistory(futureTime)
+				// Future timestamp should not be in history
+				Expect(annotation.GetActivationHistoryCount()).To(Equal(0))
+			})
+			It("limits annotation size to max 100 timestamps", func() {
+				now := time.Now()
+				// Add 150 activations (exceeds maxHistorySize of 100)
+				// Use seconds instead of minutes to keep all within 1 hour window
+				// 150 seconds = 2.5 minutes, well within 1 hour
+				for i := 0; i < 150; i++ {
+					annotation.AddActivationToHistory(now.Add(-time.Duration(i) * time.Second))
+				}
+				// Should only keep the most recent 100 entries
+				Expect(annotation.GetActivationHistoryCount()).To(Equal(100))
+				// Verify the history array size is exactly 100
+				state := annotation.GetActivationState()
+				Expect(len(state.ActivationHistory)).To(Equal(100))
+			})
+			It("defensively filters old timestamps in GetActivationHistoryCount", func() {
+				now := time.Now()
+				state := annotation.GetActivationState()
+				// Manually add old timestamp that wasn't cleaned up
+				oldTime := now.Add(-2 * time.Hour)
+				state.ActivationHistory = append(state.ActivationHistory, oldTime.Format(time.RFC3339))
+				// Add valid recent timestamp
+				annotation.AddActivationToHistory(now)
+				// GetActivationHistoryCount should filter out old timestamp
+				Expect(annotation.GetActivationHistoryCount()).To(Equal(1))
 			})
 		})
 		Describe("Backward compatibility", func() {
@@ -912,7 +967,7 @@ var _ = Describe("Pod", func() {
 		})
 		Describe("Cooldown Policy Checks", func() {
 			var (
-				annotation *bpod.BoostPodAnnotation
+				annotation  *bpod.BoostPodAnnotation
 				triggerType autoscaling.BoostTriggerType
 			)
 			BeforeEach(func() {
