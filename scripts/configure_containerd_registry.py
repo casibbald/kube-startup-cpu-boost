@@ -70,19 +70,23 @@ def get_kind_nodes():
 
 def configure_node_registry(node, registry_ip):
     """Configure containerd registry mirror on a Kind node."""
-    toml_config = f'''[plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5000"]
-  endpoint = ["http://{registry_ip}:5000"]
-[plugins."io.containerd.grpc.v1.cri".registry.mirrors."kube-startup-cpu-boost-registry:5000"]
-  endpoint = ["http://{registry_ip}:5000"]
-'''
+    # Build TOML config lines
+    toml_lines = [
+        '[plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5000"]',
+        f'  endpoint = ["http://{registry_ip}:5000"]',
+        '[plugins."io.containerd.grpc.v1.cri".registry.mirrors."kube-startup-cpu-boost-registry:5000"]',
+        f'  endpoint = ["http://{registry_ip}:5000"]',
+    ]
 
-    # Write config file via docker exec
+    # Escape each line for shell and write via printf
+    escaped_lines = [line.replace("'", "'\\''") for line in toml_lines]
+    printf_cmd = "printf '%s\\n' " + " ".join([f"'{line}'" for line in escaped_lines])
+
+    # Write config file via docker exec using printf (no heredoc)
     write_cmd = (
         f"docker exec {node} sh -c '"
         "mkdir -p /etc/containerd && "
-        f"cat > /tmp/registry-config.toml <<\\'TOML_EOF\\'\\n"
-        f"{toml_config}"
-        "TOML_EOF\n"
+        f"{printf_cmd} > /tmp/registry-config.toml && "
         "cp /tmp/registry-config.toml /etc/containerd/config.toml.d/registry-config.toml && "
         "systemctl restart containerd || true"
         "'"
