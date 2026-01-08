@@ -543,6 +543,8 @@ var _ = Describe("Pod", func() {
 				// Should be able to get activation state (initializes on demand)
 				state := parsed.GetActivationState()
 				Expect(state).NotTo(BeNil())
+				// Version should be set to current version
+				Expect(state.Version).To(Equal("1"))
 			})
 			It("handles annotation with empty activation state", func() {
 				oldAnnotation := &bpod.BoostPodAnnotation{
@@ -560,6 +562,206 @@ var _ = Describe("Pod", func() {
 				state := parsed.GetActivationState()
 				Expect(state.LastActivationTime).NotTo(BeNil())
 				Expect(state.ActivationHistory).NotTo(BeNil())
+				// Version should be set to current version
+				Expect(state.Version).To(Equal("1"))
+			})
+			It("sets version for annotations without version field", func() {
+				// Simulate old annotation without version field
+				oldAnnotationJSON := `{
+					"timestamp": "2024-01-01T00:00:00Z",
+					"initCPURequests": {"container": "500m"},
+					"initCPULimits": {"container": "1"},
+					"activationState": {
+						"lastActivationTime": {},
+						"activationHistory": []
+					}
+				}`
+				var parsed bpod.BoostPodAnnotation
+				err := json.Unmarshal([]byte(oldAnnotationJSON), &parsed)
+				Expect(err).NotTo(HaveOccurred())
+				// Get activation state should set version
+				state := parsed.GetActivationState()
+				Expect(state.Version).To(Equal("1"))
+			})
+			It("preserves version when present in annotation", func() {
+				annotation := bpod.NewBoostAnnotation()
+				state := annotation.GetActivationState()
+				state.Version = "1"
+				jsonData := annotation.ToJSON()
+				// Parse it back
+				var parsed bpod.BoostPodAnnotation
+				err := json.Unmarshal([]byte(jsonData), &parsed)
+				Expect(err).NotTo(HaveOccurred())
+				// Version should be preserved
+				Expect(parsed.ActivationState.Version).To(Equal("1"))
+			})
+		})
+		Describe("State persistence", func() {
+			It("stores cooldown state in pod annotations", func() {
+				annotation := bpod.NewBoostAnnotation()
+				// Set cooldown state
+				triggerType := autoscaling.BoostTriggerTypeContainerRestart
+				lastActivation := time.Now().Add(-1 * time.Minute)
+				annotation.SetLastActivationTime(triggerType, lastActivation)
+				annotation.AddActivationToHistory(time.Now())
+				// Serialize to JSON (simulating pod annotation storage)
+				jsonData := annotation.ToJSON()
+				// Parse back (simulating controller restart)
+				var parsed bpod.BoostPodAnnotation
+				err := json.Unmarshal([]byte(jsonData), &parsed)
+				Expect(err).NotTo(HaveOccurred())
+				// Verify state persisted
+				retrievedTime, exists := parsed.GetLastActivationTime(triggerType)
+				Expect(exists).To(BeTrue())
+				Expect(retrievedTime.Unix()).To(Equal(lastActivation.Unix()))
+				Expect(parsed.GetActivationHistoryCount()).To(Equal(1))
+			})
+			It("persists state across serialization cycles", func() {
+				annotation := bpod.NewBoostAnnotation()
+				// Set various state
+				annotation.SetLastActivationTime(autoscaling.BoostTriggerTypeContainerRestart, time.Now())
+				annotation.SetLastActivationTime(autoscaling.BoostTriggerTypePodConditionTransition, time.Now())
+				annotation.AddActivationToHistory(time.Now())
+				annotation.SetLastRestartCount("container1", 2)
+				annotation.SetLastConditionState("Ready", "True")
+				// Serialize and deserialize multiple times (simulating multiple controller restarts)
+				jsonData := annotation.ToJSON()
+				var parsed1 bpod.BoostPodAnnotation
+				json.Unmarshal([]byte(jsonData), &parsed1)
+				jsonData2 := parsed1.ToJSON()
+				var parsed2 bpod.BoostPodAnnotation
+				json.Unmarshal([]byte(jsonData2), &parsed2)
+				// Verify all state persisted
+				_, exists1 := parsed2.GetLastActivationTime(autoscaling.BoostTriggerTypeContainerRestart)
+				Expect(exists1).To(BeTrue())
+				_, exists2 := parsed2.GetLastActivationTime(autoscaling.BoostTriggerTypePodConditionTransition)
+				Expect(exists2).To(BeTrue())
+				Expect(parsed2.GetActivationHistoryCount()).To(Equal(1))
+				count, exists := parsed2.GetLastRestartCount("container1")
+				Expect(exists).To(BeTrue())
+				Expect(count).To(Equal(int32(2)))
+				status, exists := parsed2.GetLastConditionState("Ready")
+				Expect(exists).To(BeTrue())
+				Expect(status).To(Equal("True"))
+			})
+			It("includes version in serialized state", func() {
+				annotation := bpod.NewBoostAnnotation()
+				jsonData := annotation.ToJSON()
+				// Verify version is in JSON
+				Expect(jsonData).To(ContainSubstring(`"version":"1"`))
+				// Parse back and verify
+				var parsed bpod.BoostPodAnnotation
+				err := json.Unmarshal([]byte(jsonData), &parsed)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(parsed.ActivationState.Version).To(Equal("1"))
+			})
+			It("handles state with null fields gracefully", func() {
+				// Simulate state with null/empty fields
+				annotationJSON := `{
+					"timestamp": "2024-01-01T00:00:00Z",
+					"initCPURequests": {"container": "500m"},
+					"initCPULimits": {"container": "1"},
+					"activationState": {
+						"version": "1",
+						"lastActivationTime": null,
+						"activationHistory": null,
+						"lastRestartCounts": null,
+						"lastConditionStates": null
+					}
+				}`
+				var parsed bpod.BoostPodAnnotation
+				err := json.Unmarshal([]byte(annotationJSON), &parsed)
+				Expect(err).NotTo(HaveOccurred())
+				// GetActivationState should initialize null fields
+				state := parsed.GetActivationState()
+				Expect(state.LastActivationTime).NotTo(BeNil())
+				Expect(state.ActivationHistory).NotTo(BeNil())
+				Expect(state.LastRestartCounts).NotTo(BeNil())
+				Expect(state.LastConditionStates).NotTo(BeNil())
+			})
+			It("handles state with partially corrupted data", func() {
+				// State with some valid and some invalid data
+				annotation := bpod.NewBoostAnnotation()
+				// Set valid data
+				annotation.SetLastActivationTime(autoscaling.BoostTriggerTypeContainerRestart, time.Now())
+				// Manually corrupt some fields
+				state := annotation.GetActivationState()
+				state.LastActivationTime["InvalidTrigger"] = "not-a-valid-timestamp"
+				state.ActivationHistory = append(state.ActivationHistory, "invalid-timestamp")
+				// Serialize and deserialize
+				jsonData := annotation.ToJSON()
+				var parsed bpod.BoostPodAnnotation
+				err := json.Unmarshal([]byte(jsonData), &parsed)
+				Expect(err).NotTo(HaveOccurred())
+				// Should still be able to read valid data
+				_, exists := parsed.GetLastActivationTime(autoscaling.BoostTriggerTypeContainerRestart)
+				Expect(exists).To(BeTrue())
+				// Invalid data should be filtered out by defensive checks
+				_, exists = parsed.GetLastActivationTime("InvalidTrigger")
+				Expect(exists).To(BeFalse())
+				// Malformed timestamps in history should be filtered
+				count := parsed.GetActivationHistoryCount()
+				Expect(count).To(Equal(0)) // Only invalid timestamp remains, filtered out
+			})
+			It("handles unknown version gracefully", func() {
+				// Simulate state with unknown future version
+				annotationJSON := `{
+					"timestamp": "2024-01-01T00:00:00Z",
+					"initCPURequests": {"container": "500m"},
+					"initCPULimits": {"container": "1"},
+					"activationState": {
+						"version": "999",
+						"lastActivationTime": {"ContainerRestart": "2024-01-01T00:00:00Z"},
+						"activationHistory": []
+					}
+				}`
+				var parsed bpod.BoostPodAnnotation
+				err := json.Unmarshal([]byte(annotationJSON), &parsed)
+				Expect(err).NotTo(HaveOccurred())
+				// Should preserve unknown version (for future migration logic)
+				Expect(parsed.ActivationState.Version).To(Equal("999"))
+				// Should still be able to read state
+				_, exists := parsed.GetLastActivationTime(autoscaling.BoostTriggerTypeContainerRestart)
+				Expect(exists).To(BeTrue())
+			})
+			It("handles empty version string", func() {
+				// Simulate state with empty version string
+				annotationJSON := `{
+					"timestamp": "2024-01-01T00:00:00Z",
+					"initCPURequests": {"container": "500m"},
+					"initCPULimits": {"container": "1"},
+					"activationState": {
+						"version": "",
+						"lastActivationTime": {}
+					}
+				}`
+				var parsed bpod.BoostPodAnnotation
+				err := json.Unmarshal([]byte(annotationJSON), &parsed)
+				Expect(err).NotTo(HaveOccurred())
+				// GetActivationState should set version to current version
+				state := parsed.GetActivationState()
+				Expect(state.Version).To(Equal("1"))
+			})
+			It("handles state with all fields missing", func() {
+				// Minimal state with only version
+				annotationJSON := `{
+					"timestamp": "2024-01-01T00:00:00Z",
+					"initCPURequests": {"container": "500m"},
+					"initCPULimits": {"container": "1"},
+					"activationState": {
+						"version": "1"
+					}
+				}`
+				var parsed bpod.BoostPodAnnotation
+				err := json.Unmarshal([]byte(annotationJSON), &parsed)
+				Expect(err).NotTo(HaveOccurred())
+				// GetActivationState should initialize all missing fields
+				state := parsed.GetActivationState()
+				Expect(state.Version).To(Equal("1"))
+				Expect(state.LastActivationTime).NotTo(BeNil())
+				Expect(state.ActivationHistory).NotTo(BeNil())
+				Expect(state.LastRestartCounts).NotTo(BeNil())
+				Expect(state.LastConditionStates).NotTo(BeNil())
 			})
 		})
 		Describe("JSON serialization", func() {
