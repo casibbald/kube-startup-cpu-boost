@@ -634,7 +634,7 @@ var _ = Describe("StartupCPUBoost webhook", func() {
 				When("cooldown policy is valid", func() {
 					When("both fields are specified", func() {
 						BeforeEach(func() {
-							minInterval := int32(300)  // 5 minutes
+							minInterval := int32(300)   // 5 minutes
 							maxActivations := int32(10) // 10 per hour
 							boost.Spec.Cooldown = &v1alpha1.CooldownPolicy{
 								MinIntervalSeconds:    &minInterval,

@@ -39,10 +39,10 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache/informertest"
 
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/event"
-	"k8s.io/client-go/tools/record"
 )
 
 // noOpEventRecorder is a no-op implementation of record.EventRecorder
@@ -51,8 +51,10 @@ type noOpEventRecorder struct{}
 var _ record.EventRecorder = &noOpEventRecorder{}
 
 func (r *noOpEventRecorder) Event(object runtime.Object, eventtype, reason, message string) {}
-func (r *noOpEventRecorder) Eventf(object runtime.Object, eventtype, reason, messageFmt string, args ...interface{}) {}
-func (r *noOpEventRecorder) AnnotatedEventf(object runtime.Object, annotations map[string]string, eventtype, reason, messageFmt string, args ...interface{}) {}
+func (r *noOpEventRecorder) Eventf(object runtime.Object, eventtype, reason, messageFmt string, args ...interface{}) {
+}
+func (r *noOpEventRecorder) AnnotatedEventf(object runtime.Object, annotations map[string]string, eventtype, reason, messageFmt string, args ...interface{}) {
+}
 
 var _ = Describe("BoostController", func() {
 	var (
@@ -371,6 +373,83 @@ var _ = Describe("BoostController", func() {
 				mockClient.EXPECT().Status().Return(mockSubResClient).AnyTimes()
 			})
 			It("should apply boost to pods with restarts", func() {
+				Expect(err).To(BeNil())
+				Expect(result).To(Equal(ctrl.Result{}))
+			})
+		})
+		When("cooldown policy prevents ContainerRestart activation", func() {
+			var (
+				totalContainerBoosts  = 10
+				activeContainerBoosts = 5
+				testPod               *corev1.Pod
+				mockSubResClient      *mock.MockSubResourceClient
+			)
+			BeforeEach(func() {
+				// Initialize event recorder
+				boostCtrl.Recorder = &noOpEventRecorder{}
+				stats := boost.StartupCPUBoostStats{
+					TotalContainerBoosts:  totalContainerBoosts,
+					ActiveContainerBoosts: activeContainerBoosts,
+				}
+				mockManager.EXPECT().GetRegularCPUBoost(gomock.Any(), gomock.Eq(name),
+					gomock.Eq(namespace)).Times(1).Return(mockBoost, true)
+				mockBoost.EXPECT().Stats().Times(1).Return(stats)
+				mockBoost.EXPECT().HasContainerRestartTrigger().Return(true).Times(1)
+				mockBoost.EXPECT().HasPodConditionTransitionTrigger().Return(false).AnyTimes()
+				mockBoost.EXPECT().Namespace().Return(namespace).AnyTimes()
+				mockBoost.EXPECT().Name().Return(name).AnyTimes()
+				// Set cooldown policy in boostObj
+				mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName), gomock.Any()).
+					DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						boostObj := obj.(*autoscaling.StartupCPUBoost)
+						boostObj.Name = name
+						boostObj.Namespace = namespace
+						interval := int32(300) // 5 minutes
+						boostObj.Spec.Cooldown = &autoscaling.CooldownPolicy{
+							MinIntervalSeconds: &interval,
+						}
+						return nil
+					}).Times(1)
+				testPod = &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-pod",
+						Namespace: namespace,
+						Labels: map[string]string{
+							"app": "test",
+						},
+						Annotations: make(map[string]string),
+					},
+					Status: corev1.PodStatus{
+						ContainerStatuses: []corev1.ContainerStatus{
+							{
+								Name:         "container-one",
+								RestartCount: 1, // Increased from 0
+							},
+						},
+					},
+				}
+				// Set initial restart count in annotation
+				annotation := bpod.NewBoostAnnotation()
+				annotation.SetLastRestartCount("container-one", 0)
+				// Set last activation time to 1 minute ago (within cooldown)
+				lastActivation := time.Now().Add(-1 * time.Minute)
+				annotation.SetLastActivationTime(autoscaling.BoostTriggerTypeContainerRestart, lastActivation)
+				testPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+				mockBoost.EXPECT().Matches(gomock.Any()).Return(true).AnyTimes()
+				mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+						podListOut := list.(*corev1.PodList)
+						*podListOut = corev1.PodList{Items: []corev1.Pod{*testPod}}
+						return nil
+					}).Times(1)
+				mockBoost.EXPECT().ShouldActivateForContainerRestart("container-one").Return(true).AnyTimes()
+				// Should NOT call ApplyBoostAtRuntime due to cooldown
+				mockBoost.EXPECT().ApplyBoostAtRuntime(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+				mockSubResClient = mock.NewMockSubResourceClient(mockCtrl)
+				mockSubResClient.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+				mockClient.EXPECT().Status().Return(mockSubResClient).AnyTimes()
+			})
+			It("should skip boost activation due to cooldown", func() {
 				Expect(err).To(BeNil())
 				Expect(result).To(Equal(ctrl.Result{}))
 			})

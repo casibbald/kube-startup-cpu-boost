@@ -23,13 +23,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/version"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"k8s.io/client-go/tools/record"
 
 	"github.com/go-logr/logr"
 	autoscaling "github.com/google/kube-startup-cpu-boost/api/v1alpha1"
@@ -92,7 +92,7 @@ func (r *StartupCPUBoostReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 		// Check for ContainerRestart triggers and apply runtime boosts if needed
 		if boost.HasContainerRestartTrigger() {
-			if err := r.applyRuntimeBoostsForContainerRestart(ctx, boost, log); err != nil {
+			if err := r.applyRuntimeBoostsForContainerRestart(ctx, boost, boostObj.Spec.Cooldown, log); err != nil {
 				log.Error(err, "failed to apply runtime boosts for ContainerRestart triggers")
 				// Don't fail reconciliation, just log the error
 			}
@@ -202,7 +202,7 @@ func shouldUseLegacyRevertMode(serverVersion string) (legacyMode bool) {
 
 // applyRuntimeBoostsForContainerRestart applies runtime boosts to pods that have ContainerRestart triggers
 // This is called during reconciliation when ContainerRestart triggers are detected
-func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForContainerRestart(ctx context.Context, boost boost.StartupCPUBoost, log logr.Logger) error {
+func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForContainerRestart(ctx context.Context, boost boost.StartupCPUBoost, cooldownPolicy *autoscaling.CooldownPolicy, log logr.Logger) error {
 	// List all pods in the boost namespace
 	podList := &corev1.PodList{}
 	if err := r.Client.List(ctx, podList, client.InNamespace(boost.Namespace())); err != nil {
@@ -255,8 +255,18 @@ func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForContainerRestart(ctx co
 		}
 
 		if shouldActivate {
+			// Check cooldown policy before applying boost
+			triggerType := autoscaling.BoostTriggerTypeContainerRestart
+			shouldSkip, reason := annotation.ShouldSkipDueToCooldown(triggerType, cooldownPolicy)
+			if shouldSkip {
+				log.Info("skipping boost activation due to cooldown", "pod", pod.Name, "reason", reason)
+				// Emit event for skipped activation
+				r.Recorder.Event(pod, corev1.EventTypeWarning, "BoostSkippedCooldown", fmt.Sprintf("Boost activation skipped for pod %s: %s", pod.Name, reason))
+				continue
+			}
+
 			log.Info("applying runtime boost for ContainerRestart trigger", "pod", pod.Name, "namespace", pod.Namespace)
-			applied, err := boost.ApplyBoostAtRuntime(ctx, pod, autoscaling.BoostTriggerTypeContainerRestart)
+			applied, err := boost.ApplyBoostAtRuntime(ctx, pod, triggerType)
 			if err != nil {
 				log.Error(err, "failed to apply runtime boost", "pod", pod.Name)
 				continue
