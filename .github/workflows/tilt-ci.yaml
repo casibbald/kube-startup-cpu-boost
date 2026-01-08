@@ -46,6 +46,11 @@ jobs:
           go-version: '1.23'
           check-latest: true
 
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'latest'
+
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -67,16 +72,58 @@ jobs:
           # Verify Docker is available (pre-installed on GitHub Actions runners)
           docker --version
           kubectl version --client
+          
+          # Verify Helm is installed
+          helm version
 
       - name: Start local registry for Kind (localhost:5000)
         run: |
-          docker ps -a
-          RUNNING=$(docker inspect -f '{{.State.Running}}' kube-startup-cpu-boost-registry 2>/dev/null || echo "false")
-          if [ "$RUNNING" != "true" ]; then
-            docker rm -f kube-startup-cpu-boost-registry 2>/dev/null || true
-            docker run -d --restart=always -p 127.0.0.1:5000:5000 \
-              --name kube-startup-cpu-boost-registry registry:2
+          REGISTRY_NAME="kind-registry"
+          REGISTRY_PORT=5000
+          
+          # Check if our named registry exists and is running
+          if docker ps --format '{{.Names}}' | grep -q "^${REGISTRY_NAME}$"; then
+            echo "✅ Registry '${REGISTRY_NAME}' already running"
+            exit 0
           fi
+          
+          # Check if registry exists but is stopped
+          if docker ps -a --format '{{.Names}}' | grep -q "^${REGISTRY_NAME}$"; then
+            echo "Starting existing registry '${REGISTRY_NAME}'..."
+            docker start ${REGISTRY_NAME} || true
+            exit 0
+          fi
+          
+          # Check if port 5000 is already in use by another registry
+          EXISTING_REGISTRY=$(docker ps --filter "publish=5000" --format '{{.Names}}' | head -1)
+          if [ -n "$EXISTING_REGISTRY" ]; then
+            echo "⚠️  Found existing registry '$EXISTING_REGISTRY' on port ${REGISTRY_PORT}"
+            echo "Using existing registry instead of creating new one"
+            # Update REGISTRY_NAME to use the existing one
+            REGISTRY_NAME="$EXISTING_REGISTRY"
+            echo "REGISTRY_NAME=${REGISTRY_NAME}" >> $GITHUB_ENV
+            exit 0
+          fi
+          
+          # Check if port 5000 is in use by a non-registry container
+          if docker ps --filter "publish=5000" --format '{{.Names}}' | grep -q .; then
+            echo "⚠️  Port ${REGISTRY_PORT} is in use by a non-registry container"
+            echo "Attempting to create registry anyway (may fail if port is truly unavailable)..."
+          fi
+          
+          # Create new registry
+          echo "Creating new registry '${REGISTRY_NAME}' on port ${REGISTRY_PORT}..."
+          docker rm -f ${REGISTRY_NAME} 2>/dev/null || true
+          docker run -d --restart=always -p 127.0.0.1:${REGISTRY_PORT}:5000 \
+            --name ${REGISTRY_NAME} registry:2 || {
+            echo "❌ Failed to create registry. Port ${REGISTRY_PORT} may be in use."
+            echo "Existing containers using port ${REGISTRY_PORT}:"
+            docker ps --filter "publish=${REGISTRY_PORT}" --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
+            exit 1
+          }
+          
+          echo "✅ Registry '${REGISTRY_NAME}' created successfully"
+          echo "REGISTRY_NAME=${REGISTRY_NAME}" >> $GITHUB_ENV
 
       - name: Create Kind cluster (with local registry mirror)
         uses: helm/kind-action@v1
@@ -87,32 +134,65 @@ jobs:
 
       - name: Connect registry to kind network
         run: |
-          docker network connect kind kube-startup-cpu-boost-registry 2>/dev/null || true
-          # Get registry IP for verification
-          REGISTRY_IP=$(docker inspect kube-startup-cpu-boost-registry --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' | head -1)
-          echo "Registry IP on kind network: $REGISTRY_IP"
-          kubectl get nodes
+          # Use REGISTRY_NAME from previous step, or default to kind-registry
+          REGISTRY_NAME="${REGISTRY_NAME:-kind-registry}"
+          echo "Connecting registry '${REGISTRY_NAME}' to kind network..."
+          
+          # Check if registry is already connected to kind network
+          if docker inspect ${REGISTRY_NAME} --format='{{range $net, $conf := .NetworkSettings.Networks}}{{$net}}{{end}}' | grep -q kind; then
+            echo "✅ Registry '${REGISTRY_NAME}' already connected to kind network"
+          else
+            docker network connect kind ${REGISTRY_NAME} 2>/dev/null || {
+              echo "⚠️  Failed to connect registry to kind network (may already be connected or network doesn't exist yet)"
+            }
+          fi
+          
+          # Verify registry is connected to kind network
+          # We use container name (not IP) for containerd config, so we just need to verify connectivity
+          if docker inspect ${REGISTRY_NAME} --format='{{range $net, $conf := .NetworkSettings.Networks}}{{$net}}{{end}}' | grep -q kind; then
+            echo "✅ Registry '${REGISTRY_NAME}' is connected to kind network"
+          else
+            echo "⚠️  Registry not yet connected to kind network (will be configured by containerd script)"
+          fi
+          
+          kubectl get nodes || echo "⚠️  kubectl not yet configured (cluster may still be starting)"
           kubectl get pods -A || true
 
       - name: Configure containerd registry mirror
+        env:
+          REGISTRY_NAME: ${{ env.REGISTRY_NAME || 'kind-registry' }}
         run: python3 scripts/configure_containerd_registry.py
 
       - name: Verify registry accessibility from Kind nodes
         run: |
-          # Get registry IP
-          REGISTRY_IP=$(docker inspect kube-startup-cpu-boost-registry --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' | head -1)
-          echo "Verifying registry accessibility from Kind nodes..."
-          echo "Registry IP: $REGISTRY_IP"
+          REGISTRY_NAME="${REGISTRY_NAME:-kind-registry}"
           
-          # Test registry access from a Kind node
-          NODE_NAME=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')
+          echo "Verifying registry accessibility from Kind nodes..."
+          echo "Registry name: ${REGISTRY_NAME}"
+          echo "Using container name for DNS resolution (no IP extraction needed)"
+          
+          # Test registry access from a Kind node using container name
+          NODE_NAME=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+          if [ -z "$NODE_NAME" ]; then
+            echo "❌ No Kind nodes found"
+            exit 1
+          fi
+          
           echo "Testing from node: $NODE_NAME"
           
-          # Test if registry is reachable
-          docker exec $NODE_NAME sh -c "nc -zv $REGISTRY_IP 5000" || echo "Warning: Could not connect to registry from node"
+          # Test if registry is reachable via container name (Docker DNS)
+          if docker exec $NODE_NAME sh -c "nc -zv ${REGISTRY_NAME} 5000" 2>&1; then
+            echo "✅ Registry is reachable from node via container name"
+          else
+            echo "⚠️  Warning: Could not connect to registry from node (containerd config may still work)"
+          fi
           
-          # Test registry API
-          docker exec $NODE_NAME sh -c "curl -s http://$REGISTRY_IP:5000/v2/" || echo "Warning: Could not access registry API"
+          # Test registry API via container name
+          if docker exec $NODE_NAME sh -c "curl -s http://${REGISTRY_NAME}:5000/v2/" 2>&1 | grep -q "{}"; then
+            echo "✅ Registry API is accessible via container name"
+          else
+            echo "⚠️  Warning: Could not access registry API (containerd config may still work)"
+          fi
           
           echo "✅ Registry verification complete"
 
@@ -125,6 +205,23 @@ jobs:
       - name: Create namespace
         run: |
           kubectl create namespace kube-startup-cpu-boost-system --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Create local registry ConfigMap for Tilt
+        run: |
+          # Create ConfigMap so Tilt can detect the local registry
+          # This prevents the "You are running Kind without a local image registry" warning
+          kubectl create namespace kube-public --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -f - <<EOF
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: local-registry-hosting
+            namespace: kube-public
+          data:
+            localRegistryHosting.v1: |
+              host: "localhost:5000"
+              help: "https://kind.sigs.k8s.io/docs/user/local-registry/"
+          EOF
 
       - name: Install Tilt
         run: |
@@ -172,20 +269,26 @@ jobs:
       - name: Check deployment status
         if: always()
         run: |
+          # Check if kubectl is configured (cluster exists)
+          if ! kubectl cluster-info &>/dev/null; then
+            echo "⚠️  Kubernetes cluster not available (workflow may have failed before cluster creation)"
+            exit 0
+          fi
+          
           echo "=== Kubernetes Resources ==="
-          kubectl get all -n kube-startup-cpu-boost-system
+          kubectl get all -n kube-startup-cpu-boost-system || echo "⚠️  Namespace may not exist"
           
           echo ""
           echo "=== Controller Manager Logs ==="
-          kubectl logs -n kube-startup-cpu-boost-system -l control-plane=controller-manager --tail=100 || true
+          kubectl logs -n kube-startup-cpu-boost-system -l control-plane=controller-manager --tail=100 || echo "⚠️  Controller manager pod may not exist"
           
           echo ""
           echo "=== RBAC Resources ==="
-          kubectl get rolebinding,clusterrolebinding -n kube-startup-cpu-boost-system || true
+          kubectl get rolebinding,clusterrolebinding -n kube-startup-cpu-boost-system || echo "⚠️  RBAC resources may not exist"
           
           echo ""
           echo "=== Leader Election Lease ==="
-          kubectl get leases -n kube-startup-cpu-boost-system || true
+          kubectl get leases -n kube-startup-cpu-boost-system || echo "⚠️  Leader election lease may not exist"
 
       - name: Verify controller functionality
         run: |
@@ -258,7 +361,24 @@ jobs:
         if: always()
         run: |
           echo "Cleaning up resources..."
-          tilt down || true
-          kind delete cluster --name kube-startup-cpu-boost || true
-          docker rm -f kube-startup-cpu-boost-registry || true
+          
+          # Cleanup Tilt (if installed and running)
+          if command -v tilt &>/dev/null; then
+            tilt down || true
+          fi
+          
+          # Cleanup Kind cluster
+          if command -v kind &>/dev/null; then
+            kind delete cluster --name kube-startup-cpu-boost || true
+          fi
+          
+          # Cleanup registry (only if we created it, not if we reused an existing one)
+          REGISTRY_NAME="${REGISTRY_NAME:-kind-registry}"
+          if [ "$REGISTRY_NAME" = "kind-registry" ]; then
+            docker rm -f ${REGISTRY_NAME} || true
+            echo "✅ Removed registry '${REGISTRY_NAME}'"
+          else
+            echo "⚠️  Skipping registry cleanup (using existing registry '${REGISTRY_NAME}')"
+          fi
+          
           echo "✅ Cleanup complete"

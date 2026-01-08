@@ -99,15 +99,17 @@ local_resource(
 # Build Docker Image
 # ====================
 # Build Docker image for manager
-# Use custom_build to ensure binary exists before Docker build
-# The 'deps' parameter ensures the binary exists before Docker build
+# Use local_resource for build/push, then custom_build for Tilt integration
+# This ensures the build actually runs and the image is pushed to registry
 BINARY_PATH = 'bin/manager'
 IMAGE_NAME = 'kube-startup-cpu-boost'
 REGISTRY = 'localhost:5000'
 FULL_IMAGE_NAME = '%s/%s' % (REGISTRY, IMAGE_NAME)
 
-custom_build(
-    IMAGE_NAME,
+# Step 1: Build and push Docker image using local_resource
+# This ensures the build command actually executes
+local_resource(
+    'docker-build-and-push',
     'docker buildx build --platform %s -f Dockerfile.dev -t %s:tilt . && docker tag %s:tilt %s:tilt && docker push %s:tilt' % (
         DOCKER_PLATFORM,
         IMAGE_NAME,
@@ -119,6 +121,20 @@ custom_build(
         BINARY_PATH,  # File dependency ensures binary exists before Docker build
         'Dockerfile.dev',
     ],
+    resource_deps=['build-manager'],  # Wait for binary to be built
+    labels=['build'],
+    allow_parallel=False,
+)
+
+# Step 2: Tell Tilt about the image (already built and pushed)
+# The image was already pushed by docker-build-and-push, so we just tag it
+# Note: custom_build doesn't support resource_deps, but the deps parameter ensures
+# the binary exists, and docker-build-and-push will complete before this runs
+# due to the k8s_resource dependency chain
+custom_build(
+    IMAGE_NAME,
+    'docker tag %s:tilt $EXPECTED_REF && docker push $EXPECTED_REF' % FULL_IMAGE_NAME,
+    deps=[BINARY_PATH],  # File dependency for live_update
     tag='tilt',
     live_update=[
         sync(BINARY_PATH, '/manager'),
@@ -141,5 +157,5 @@ k8s_yaml(
 k8s_resource(
     'kube-startup-cpu-boost-controller-manager',
     labels=['controllers'],
-    resource_deps=['generate-crds', 'build-manager', IMAGE_NAME],  # Wait for CRDs, binary, and image build/push to complete
+    resource_deps=['generate-crds', 'build-manager', 'docker-build-and-push', 'kube-startup-cpu-boost'],  # Wait for CRDs, binary, image build/push, and Tilt image registration
 )

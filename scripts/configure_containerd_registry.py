@@ -18,6 +18,7 @@ This script configures containerd on all Kind cluster nodes to use
 a local Docker registry as a mirror.
 """
 
+import os
 import subprocess
 import sys
 
@@ -46,7 +47,19 @@ def run_command(cmd, check=True):
 
 
 def get_registry_ip(registry_name):
-    """Get the IP address of the Docker registry container."""
+    """Get the IP address of the Docker registry container from the kind network."""
+    # First try to get IP from kind network specifically
+    cmd = (
+        f"docker inspect {registry_name} "
+        "--format='{{range $net, $conf := .NetworkSettings.Networks}}{{if eq $net \"kind\"}}{{$conf.IPAddress}}{{end}}{{end}}'"
+    )
+    output, returncode = run_command(cmd, check=False)
+    if returncode == 0 and output and output.strip():
+        ip = output.strip().strip("'").strip('"')
+        if ip:
+            return ip
+    
+    # Fallback: get first IP from any network
     cmd = (
         f"docker inspect {registry_name} "
         "--format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'"
@@ -54,7 +67,7 @@ def get_registry_ip(registry_name):
     output, returncode = run_command(cmd, check=False)
     if returncode != 0 or not output:
         return None
-    # Get first IP if multiple networks
+    # Get first IP if multiple networks (split by whitespace/newline)
     ip = output.split()[0] if output.split() else output
     return ip.strip().strip("'").strip('"')
 
@@ -68,14 +81,22 @@ def get_kind_nodes():
     return output.split()
 
 
-def configure_node_registry(node, registry_ip):
-    """Configure containerd registry mirror on a Kind node."""
+def configure_node_registry(node, registry_name):
+    """Configure containerd registry mirror on a Kind node.
+    
+    Uses the registry container name instead of IP for better reliability.
+    Docker's DNS resolution within the kind network will handle name resolution.
+    """
+    # Use container name instead of IP - Docker DNS will resolve it
+    # This is more reliable than using IP addresses which can change
+    registry_endpoint = f"http://{registry_name}:5000"
+    
     # Build TOML config lines
     toml_lines = [
         '[plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5000"]',
-        f'  endpoint = ["http://{registry_ip}:5000"]',
-        '[plugins."io.containerd.grpc.v1.cri".registry.mirrors."kube-startup-cpu-boost-registry:5000"]',
-        f'  endpoint = ["http://{registry_ip}:5000"]',
+        f'  endpoint = ["{registry_endpoint}"]',
+        f'[plugins."io.containerd.grpc.v1.cri".registry.mirrors."{registry_name}:5000"]',
+        f'  endpoint = ["{registry_endpoint}"]',
     ]
 
     # Escape each line for shell and write via printf
@@ -103,15 +124,19 @@ def configure_node_registry(node, registry_ip):
 
 def main():
     """Main function."""
-    registry_name = "kube-startup-cpu-boost-registry"
+    # Get registry name from environment variable, with fallback to default
+    registry_name = os.environ.get("REGISTRY_NAME", "kind-registry")
+    print(f"Using registry: {registry_name}")
 
-    # Get registry IP
-    registry_ip = get_registry_ip(registry_name)
-    if not registry_ip:
-        print(f"ERROR: Could not get IP for registry {registry_name}")
+    # Verify registry exists and is running
+    cmd = f"docker inspect {registry_name} --format='{{{{.State.Running}}}}'"
+    output, returncode = run_command(cmd, check=False)
+    if returncode != 0 or output.strip() != "true":
+        print(f"ERROR: Registry '{registry_name}' is not running")
+        print(f"Make sure the registry container exists and is running")
         sys.exit(1)
 
-    print(f"Registry IP: {registry_ip}")
+    print(f"Registry '{registry_name}' is running")
 
     # Get all nodes
     nodes = get_kind_nodes()
@@ -119,11 +144,11 @@ def main():
         print("ERROR: No Kind cluster nodes found")
         sys.exit(1)
 
-    # Configure each node
+    # Configure each node using container name (Docker DNS will resolve it)
     success_count = 0
     for node in nodes:
         print(f"Configuring registry mirror on node: {node}")
-        if configure_node_registry(node, registry_ip):
+        if configure_node_registry(node, registry_name):
             success_count += 1
             print(f"  ✓ Successfully configured {node}")
         else:

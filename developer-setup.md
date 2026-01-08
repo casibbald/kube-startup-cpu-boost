@@ -202,7 +202,7 @@ tilt down
 ### Cluster Configuration
 
 - **Name**: `kube-startup-cpu-boost`
-- **Registry**: `kube-startup-cpu-boost-registry` on `localhost:5000`
+- **Registry**: `kind-registry` on `localhost:5000`
 - **Network**:
   - Pod Subnet: `10.206.0.0/16`
   - Service Subnet: `10.207.0.0/16`
@@ -227,7 +227,7 @@ kind get clusters
 kubectl config use-context kind-kube-startup-cpu-boost
 
 # Check registry
-docker ps | grep kube-startup-cpu-boost-registry
+docker ps | grep kind-registry
 
 # View registry contents (if needed)
 curl http://localhost:5000/v2/_catalog
@@ -323,13 +323,13 @@ just kind-setup
 
 ```bash
 # Check registry is running
-docker ps | grep kube-startup-cpu-boost-registry
+docker ps | grep kind-registry
 
 # Check registry is on kind network
-docker network inspect kind | grep kube-startup-cpu-boost-registry
+docker network inspect kind | grep kind-registry
 
 # Restart registry if needed
-docker start kube-startup-cpu-boost-registry
+docker start kind-registry
 ```
 
 **Cluster not found:**

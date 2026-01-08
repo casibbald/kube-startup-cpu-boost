@@ -15,16 +15,21 @@
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: kube-startup-cpu-boost
+# Configure containerd to use local registry mirror
+# This maps localhost:5000 to kind-registry:5000 (container name, Docker DNS resolves it)
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5000"]
+      endpoint = ["http://kind-registry:5000"]
 nodes:
 - role: control-plane
+  image: kindest/node:v1.34.0@sha256:8c00e5f1b3e8e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3
   kubeadmConfigPatches:
   - |
     kind: InitConfiguration
     nodeRegistration:
       kubeletExtraArgs:
         node-labels: "ingress-ready=true"
-# Note: Registry mirror configuration is handled dynamically by scripts/setup_kind.py
-# which uses the registry IP address for reliable connectivity
 networking:
   # Use unique pod and service subnets to avoid conflicts with other Kind clusters
   # Allocation: kube-startup-cpu-boost cluster

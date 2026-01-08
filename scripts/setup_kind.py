@@ -30,7 +30,7 @@ from pathlib import Path
 
 # Configuration
 CLUSTER_NAME = "kube-startup-cpu-boost"
-REGISTRY_NAME = "kube-startup-cpu-boost-registry"
+REGISTRY_NAME = "kind-registry"
 REGISTRY_PORT = "5000"
 
 
