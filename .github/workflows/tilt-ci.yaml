@@ -1,0 +1,252 @@
+# Copyright 2023 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Tilt CI - End-to-End Deployment
+
+on:
+  push:
+    branches:
+      - main
+      - development
+      - 'story/**'
+  pull_request:
+    branches:
+      - main
+      - development
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tilt-ci:
+    runs-on: ubuntu-latest
+    env:
+      # CI environment flag for scripts
+      CI: "true"
+      NON_INTERACTIVE: "true"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          check-latest: true
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-pip docker.io kubectl kind
+
+      - name: Start local registry for Kind (localhost:5000)
+        run: |
+          docker ps -a
+          RUNNING=$(docker inspect -f '{{.State.Running}}' kube-startup-cpu-boost-registry 2>/dev/null || echo "false")
+          if [ "$RUNNING" != "true" ]; then
+            docker rm -f kube-startup-cpu-boost-registry 2>/dev/null || true
+            docker run -d --restart=always -p 127.0.0.1:5000:5000 \
+              --name kube-startup-cpu-boost-registry registry:2
+          fi
+
+      - name: Create Kind cluster (with local registry mirror)
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: kube-startup-cpu-boost
+          wait: 60s
+          config: kind-config.yaml
+
+      - name: Connect registry to kind network
+        run: |
+          docker network connect kind kube-startup-cpu-boost-registry 2>/dev/null || true
+          kubectl get nodes
+          kubectl get pods -A || true
+
+      - name: Configure containerd registry mirror
+        run: |
+          # Get registry IP
+          REGISTRY_IP=$(docker inspect kube-startup-cpu-boost-registry --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' | head -1)
+          echo "Registry IP: $REGISTRY_IP"
+          
+          # Configure containerd on all nodes
+          for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
+            echo "Configuring registry mirror on node: $node"
+            docker exec $node sh -c "
+              mkdir -p /etc/containerd
+              cat > /tmp/registry-config.toml <<EOF
+[plugins.\"io.containerd.grpc.v1.cri\".registry.mirrors.\"localhost:5000\"]
+  endpoint = [\"http://${REGISTRY_IP}:5000\"]
+[plugins.\"io.containerd.grpc.v1.cri\".registry.mirrors.\"kube-startup-cpu-boost-registry:5000\"]
+  endpoint = [\"http://${REGISTRY_IP}:5000\"]
+EOF
+              cp /tmp/registry-config.toml /etc/containerd/config.toml.d/registry-config.toml
+              systemctl restart containerd || true
+            " || echo "Warning: Could not configure registry on $node"
+          done
+
+      - name: Verify cluster
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
+          kubectl get pods -A || true
+
+      - name: Create namespace
+        run: |
+          kubectl create namespace kube-startup-cpu-boost-system --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Install Tilt
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/tilt-dev/tilt/master/scripts/install.sh | bash
+          tilt version
+
+      - name: Get dependencies
+        run: go mod download
+
+      - name: Generate CRDs
+        run: |
+          make manifests
+          ls -la config/crd/bases/
+
+      - name: Install CRDs
+        run: |
+          kubectl apply -f config/crd/bases/
+          kubectl wait --for=condition=established crd startupcpuboosts.autoscaling.x-k8s.io --timeout=60s
+
+      - name: Run Tilt CI
+        env:
+          TILT_HOST: "0.0.0.0"
+          CI: "true"
+        run: |
+          echo "Starting Tilt CI - will build, deploy, and wait for services to be healthy"
+          echo "Tilt will:"
+          echo "  1. Build Go binary for detected architecture"
+          echo "  2. Build Docker image"
+          echo "  3. Deploy via Helm chart"
+          echo "  4. Wait for all resources to be ready"
+          # Tilt CI runs in non-interactive mode and waits for resources to be ready
+          tilt ci --timeout 10m
+        timeout-minutes: 12
+
+      - name: Check deployment status
+        if: always()
+        run: |
+          echo "=== Kubernetes Resources ==="
+          kubectl get all -n kube-startup-cpu-boost-system
+          
+          echo ""
+          echo "=== Controller Manager Logs ==="
+          kubectl logs -n kube-startup-cpu-boost-system -l control-plane=controller-manager --tail=100 || true
+          
+          echo ""
+          echo "=== RBAC Resources ==="
+          kubectl get rolebinding,clusterrolebinding -n kube-startup-cpu-boost-system || true
+          
+          echo ""
+          echo "=== Leader Election Lease ==="
+          kubectl get leases -n kube-startup-cpu-boost-system || true
+
+      - name: Verify controller functionality
+        run: |
+          echo "Waiting for controller to be ready..."
+          kubectl wait --for=condition=ready pod -n kube-startup-cpu-boost-system -l control-plane=controller-manager --timeout=120s
+          
+          echo "Checking for RBAC errors in logs..."
+          LOGS=$(kubectl logs -n kube-startup-cpu-boost-system -l control-plane=controller-manager --tail=50)
+          if echo "$LOGS" | grep -i "forbidden\|error.*rbac\|error.*lease"; then
+            echo "ERROR: RBAC errors detected in logs"
+            echo "$LOGS"
+            exit 1
+          fi
+          
+          echo "Verifying leader election..."
+          LEASES=$(kubectl get leases -n kube-startup-cpu-boost-system -o name)
+          if [ -z "$LEASES" ]; then
+            echo "WARNING: No leader election lease found"
+          else
+            echo "✅ Leader election lease exists"
+            kubectl get leases -n kube-startup-cpu-boost-system
+          fi
+          
+          echo "✅ Controller is running successfully"
+
+      - name: Test CRD recognition
+        run: |
+          echo "Testing CRD recognition..."
+          kubectl api-resources | grep startupcpuboost || (echo "ERROR: CRD not recognized" && exit 1)
+          echo "✅ CRD is recognized by Kubernetes API"
+
+      - name: Test controller reconciliation
+        run: |
+          echo "Creating test StartupCPUBoost resource..."
+          cat <<EOF | kubectl apply -f -
+          apiVersion: autoscaling.x-k8s.io/v1alpha1
+          kind: StartupCPUBoost
+          metadata:
+            name: test-boost
+            namespace: default
+          spec:
+            selector:
+              matchLabels:
+                app: test
+            containerPolicy:
+              containers:
+              - name: test-container
+                cpuBoost:
+                  requests: "2"
+                  limits: "4"
+            trigger:
+              podCreate: {}
+          EOF
+          
+          sleep 5
+          
+          echo "Checking resource status..."
+          kubectl get startupcpuboost test-boost -n default -o yaml || true
+          
+          echo "Cleaning up test resource..."
+          kubectl delete startupcpuboost test-boost -n default --ignore-not-found=true
+
+      - name: Upload Tilt logs
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: tilt-ci-logs
+          retention-days: 3
+          path: |
+            ~/.tilt-dev/
+
+      - name: Upload controller logs
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: controller-logs
+          retention-days: 3
+          path: |
+            controller-logs.txt
+        continue-on-error: true
+
+      - name: Save controller logs
+        if: always()
+        run: |
+          kubectl logs -n kube-startup-cpu-boost-system -l control-plane=controller-manager > controller-logs.txt 2>&1 || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "Cleaning up resources..."
+          tilt down || true
+          kind delete cluster --name kube-startup-cpu-boost || true
+          docker rm -f kube-startup-cpu-boost-registry || true
+          echo "✅ Cleanup complete"
