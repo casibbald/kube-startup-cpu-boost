@@ -276,6 +276,104 @@ spec:
       toStatus: "True"
 ```
 
+### [Boost cooldown] Rate Limiting
+
+Prevent excessive boost activations during crash loops, readiness flapping, or
+other rapid failure scenarios by configuring cooldown policies. This ensures
+system stability and prevents resource exhaustion.
+
+#### Minimum Interval Between Activations
+
+Enforce a minimum time interval between boost activations:
+
+```yaml
+spec:
+  cooldown:
+    minIntervalSeconds: 300  # 5 minutes between activations
+  triggers:
+    - type: ContainerRestart
+    - type: PodConditionTransition
+      conditionType: Ready
+      fromStatus: "False"
+      toStatus: "True"
+```
+
+**Behavior:**
+
+* Activation is skipped if the minimum interval has not elapsed since the last
+  activation
+* Works per (pod, boost) combination - each pod has independent cooldown state
+* Cooldown state persists across controller restarts (stored in pod annotations)
+* A Kubernetes event is emitted when activation is skipped due to cooldown
+
+#### Maximum Activations Per Hour
+
+Limit the number of activations within a rolling hour window:
+
+```yaml
+spec:
+  cooldown:
+    maxActivationsPerHour: 3  # Maximum 3 activations per hour
+  triggers:
+    - type: ContainerRestart
+```
+
+**Behavior:**
+
+* Activation is skipped if the limit is exceeded within the last hour
+* Uses a rolling window - only activations from the last hour are counted
+* Old activation timestamps (>1 hour) are automatically cleaned up
+* Annotation size is limited to 100 timestamps to prevent unbounded growth
+* Works per (pod, boost) combination
+
+#### Combined Cooldown Policies
+
+Both policies can be used together. The minimum interval is checked first:
+
+```yaml
+spec:
+  cooldown:
+    minIntervalSeconds: 300      # 5 minutes between activations
+    maxActivationsPerHour: 3     # Max 3 activations per hour
+  triggers:
+    - type: ContainerRestart
+    - type: PodConditionTransition
+      conditionType: Ready
+      fromStatus: "False"
+      toStatus: "True"
+```
+
+**Behavior:**
+
+* If minimum interval is not met, activation is skipped (regardless of rate
+  limit)
+* If minimum interval is met but rate limit is exceeded, activation is skipped
+* Both policies must be satisfied for activation to proceed
+
+#### Cooldown State Persistence
+
+Cooldown state is stored in pod annotations and survives controller restarts:
+
+* Last activation time per trigger type
+* Activation history (timestamps from the last hour)
+* Automatic cleanup of old timestamps (>1 hour)
+* Defensive handling of malformed or future timestamps (clock skew protection)
+
+#### Observability
+
+When a boost activation is skipped due to cooldown, a Kubernetes event is
+emitted:
+
+* Event type: `Warning`
+* Event reason: `BoostSkippedCooldown`
+* Event message includes the reason (minimum interval or rate limit exceeded)
+
+You can view these events using:
+
+```bash
+kubectl get events --field-selector reason=BoostSkippedCooldown
+```
+
 ## Configuration
 
 Kube Startup CPU Boost operator can be configured with environmental variables.
