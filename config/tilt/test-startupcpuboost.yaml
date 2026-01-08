@@ -17,15 +17,19 @@ kind: StartupCPUBoost
 metadata:
   name: test-boost
   namespace: default
+selector:
+  matchLabels:
+    app: test
 spec:
-  selector:
-    matchLabels:
-      app: test
-  containerPolicy:
-    containers:
-    - name: test-container
-      cpuBoost:
+  resourcePolicy:
+    containerPolicies:
+    - containerName: test-container
+      fixedResources:
         requests: "2"
         limits: "4"
-  trigger:
-    podCreate: {}
+  durationPolicy:
+    fixedDuration:
+      unit: Minutes
+      value: 5
+  triggers:
+  - type: PodCreate
