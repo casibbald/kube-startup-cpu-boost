@@ -141,5 +141,5 @@ k8s_yaml(
 k8s_resource(
     'kube-startup-cpu-boost-controller-manager',
     labels=['controllers'],
-    resource_deps=['generate-crds', 'build-manager'],  # Wait for CRDs and binary to be built (image build is automatic via custom_build)
+    resource_deps=['generate-crds', 'build-manager', IMAGE_NAME],  # Wait for CRDs, binary, and image build/push to complete
 )
