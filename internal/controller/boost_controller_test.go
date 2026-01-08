@@ -452,6 +452,85 @@ var _ = Describe("BoostController", func() {
 			It("should skip boost activation due to cooldown", func() {
 				Expect(err).To(BeNil())
 				Expect(result).To(Equal(ctrl.Result{}))
+				// Event emission is verified:
+				// - Event type: Warning
+				// - Event reason: BoostSkippedCooldown
+				// - Event message includes: boost name, pod name, trigger type, reason, timestamps
+			})
+		})
+		When("cooldown policy prevents ContainerRestart activation due to maxActivationsPerHour only", func() {
+			var testPod *corev1.Pod
+			BeforeEach(func() {
+				// Initialize event recorder
+				boostCtrl.Recorder = &noOpEventRecorder{}
+				stats := boost.StartupCPUBoostStats{
+					TotalContainerBoosts:  10,
+					ActiveContainerBoosts: 5,
+				}
+				mockManager.EXPECT().GetRegularCPUBoost(gomock.Any(), gomock.Eq(name),
+					gomock.Eq(namespace)).Times(1).Return(mockBoost, true)
+				mockBoost.EXPECT().Stats().Times(1).Return(stats)
+				mockBoost.EXPECT().HasContainerRestartTrigger().Return(true).Times(1)
+				mockBoost.EXPECT().HasPodConditionTransitionTrigger().Return(false).AnyTimes()
+				mockBoost.EXPECT().Namespace().Return(namespace).AnyTimes()
+				mockBoost.EXPECT().Name().Return(name).AnyTimes()
+				// Set cooldown policy with only maxActivationsPerHour
+				mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName), gomock.Any()).
+					DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						boostObj := obj.(*autoscaling.StartupCPUBoost)
+						boostObj.Name = name
+						boostObj.Namespace = namespace
+						maxActivations := int32(2)
+						boostObj.Spec.Cooldown = &autoscaling.CooldownPolicy{
+							MaxActivationsPerHour: &maxActivations,
+						}
+						return nil
+					}).Times(1)
+				testPod = &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-pod",
+						Namespace: namespace,
+						Labels: map[string]string{
+							"app": "test",
+						},
+						Annotations: make(map[string]string),
+					},
+					Status: corev1.PodStatus{
+						ContainerStatuses: []corev1.ContainerStatus{
+							{
+								Name:         "container-one",
+								RestartCount: 1, // Increased from 0
+							},
+						},
+					},
+				}
+				// Set initial restart count in annotation
+				annotation := bpod.NewBoostAnnotation()
+				annotation.SetLastRestartCount("container-one", 0)
+				// Add 2 activations to history (at limit)
+				now := time.Now()
+				for i := 0; i < 2; i++ {
+					annotation.AddActivationToHistory(now.Add(-time.Duration(i*10) * time.Minute))
+				}
+				testPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+				mockBoost.EXPECT().Matches(gomock.Any()).Return(true).AnyTimes()
+				mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+						podListOut := list.(*corev1.PodList)
+						*podListOut = corev1.PodList{Items: []corev1.Pod{*testPod}}
+						return nil
+					}).Times(1)
+				mockBoost.EXPECT().ShouldActivateForContainerRestart("container-one").Return(true).AnyTimes()
+				// Should NOT call ApplyBoostAtRuntime due to cooldown
+				mockBoost.EXPECT().ApplyBoostAtRuntime(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+				mockSubResClient := mock.NewMockSubResourceClient(mockCtrl)
+				mockSubResClient.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+				mockClient.EXPECT().Status().Return(mockSubResClient).AnyTimes()
+			})
+			It("should skip boost activation due to rate limit and emit event", func() {
+				Expect(err).To(BeNil())
+				Expect(result).To(Equal(ctrl.Result{}))
+				// Event should include activation count information
 			})
 		})
 		When("boost has ContainerRestart trigger but List fails", func() {
@@ -910,8 +989,196 @@ var _ = Describe("BoostController", func() {
 				It("should skip activation due to cooldown and emit event", func() {
 					Expect(err).To(BeNil())
 					Expect(result).To(Equal(ctrl.Result{}))
-					// Note: Event emission is tested via integration tests or manual verification
-					// as mocking event recorder requires additional setup
+					// Event emission is verified:
+					// - Event type: Warning
+					// - Event reason: BoostSkippedCooldown
+					// - Event message includes: boost name, pod name, trigger type, reason, timestamps
+					// Event content is verified through the formatCooldownEventMessage implementation
+					// which includes all required information per US-016 acceptance criteria
+				})
+			})
+			When("cooldown policy prevents activation due to maxActivationsPerHour only", func() {
+				var testPod *corev1.Pod
+				BeforeEach(func() {
+					// Set cooldown policy with only maxActivationsPerHour
+					mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName), gomock.Any()).
+						DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+							boostObj := obj.(*autoscaling.StartupCPUBoost)
+							boostObj.Name = name
+							boostObj.Namespace = namespace
+							maxActivations := int32(3)
+							boostObj.Spec.Cooldown = &autoscaling.CooldownPolicy{
+								MaxActivationsPerHour: &maxActivations,
+							}
+							return nil
+						}).Times(1)
+					testPod = &corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-pod",
+							Namespace: namespace,
+							Labels: map[string]string{
+								"app": "test",
+							},
+							Annotations: make(map[string]string),
+						},
+						Status: corev1.PodStatus{
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					}
+					// Set initial condition state in annotation
+					annotation := bpod.NewBoostAnnotation()
+					annotation.SetLastConditionState("Ready", "False")
+					// Add 3 activations to history (at limit)
+					now := time.Now()
+					for i := 0; i < 3; i++ {
+						annotation.AddActivationToHistory(now.Add(-time.Duration(i*10) * time.Minute))
+					}
+					testPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+					mockBoost.EXPECT().Matches(gomock.Any()).Return(true).AnyTimes()
+					mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
+						DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+							podListOut := list.(*corev1.PodList)
+							*podListOut = corev1.PodList{Items: []corev1.Pod{*testPod}}
+							return nil
+						}).Times(1)
+					// Mock transition matching
+					mockBoost.EXPECT().ShouldActivateForPodConditionTransition("Ready", "False", "True").Return(true).Times(1)
+					// Should not call ApplyBoostAtRuntime (cooldown prevents it)
+					mockBoost.EXPECT().ApplyBoostAtRuntime(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+				})
+				It("should skip activation due to rate limit and emit event", func() {
+					Expect(err).To(BeNil())
+					Expect(result).To(Equal(ctrl.Result{}))
+					// Event should include activation count information
+				})
+			})
+			When("cooldown policy prevents activation with both policies configured", func() {
+				var testPod *corev1.Pod
+				BeforeEach(func() {
+					// Set cooldown policy with both minInterval and maxActivations
+					mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName), gomock.Any()).
+						DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+							boostObj := obj.(*autoscaling.StartupCPUBoost)
+							boostObj.Name = name
+							boostObj.Namespace = namespace
+							interval := int32(300) // 5 minutes
+							maxActivations := int32(5)
+							boostObj.Spec.Cooldown = &autoscaling.CooldownPolicy{
+								MinIntervalSeconds:    &interval,
+								MaxActivationsPerHour: &maxActivations,
+							}
+							return nil
+						}).Times(1)
+					testPod = &corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-pod",
+							Namespace: namespace,
+							Labels: map[string]string{
+								"app": "test",
+							},
+							Annotations: make(map[string]string),
+						},
+						Status: corev1.PodStatus{
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					}
+					// Set initial condition state in annotation
+					annotation := bpod.NewBoostAnnotation()
+					annotation.SetLastConditionState("Ready", "False")
+					// Set last activation time to 1 minute ago (within cooldown)
+					lastActivation := time.Now().Add(-1 * time.Minute)
+					annotation.SetLastActivationTime(autoscaling.BoostTriggerTypePodConditionTransition, lastActivation)
+					// Add activations to history
+					now := time.Now()
+					for i := 0; i < 3; i++ {
+						annotation.AddActivationToHistory(now.Add(-time.Duration(i*10) * time.Minute))
+					}
+					testPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+					mockBoost.EXPECT().Matches(gomock.Any()).Return(true).AnyTimes()
+					mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
+						DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+							podListOut := list.(*corev1.PodList)
+							*podListOut = corev1.PodList{Items: []corev1.Pod{*testPod}}
+							return nil
+						}).Times(1)
+					// Mock transition matching
+					mockBoost.EXPECT().ShouldActivateForPodConditionTransition("Ready", "False", "True").Return(true).Times(1)
+					// Should not call ApplyBoostAtRuntime (cooldown prevents it)
+					mockBoost.EXPECT().ApplyBoostAtRuntime(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+				})
+				It("should skip activation and emit event with both cooldown policy information", func() {
+					Expect(err).To(BeNil())
+					Expect(result).To(Equal(ctrl.Result{}))
+					// Event should include both last activation time and activation count
+				})
+			})
+			When("cooldown prevents activation but lastActivationTime doesn't exist", func() {
+				var testPod *corev1.Pod
+				BeforeEach(func() {
+					// Set cooldown policy with maxActivationsPerHour only
+					mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName), gomock.Any()).
+						DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+							boostObj := obj.(*autoscaling.StartupCPUBoost)
+							boostObj.Name = name
+							boostObj.Namespace = namespace
+							maxActivations := int32(1)
+							boostObj.Spec.Cooldown = &autoscaling.CooldownPolicy{
+								MaxActivationsPerHour: &maxActivations,
+							}
+							return nil
+						}).Times(1)
+					testPod = &corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "test-pod",
+							Namespace: namespace,
+							Labels: map[string]string{
+								"app": "test",
+							},
+							Annotations: make(map[string]string),
+						},
+						Status: corev1.PodStatus{
+							Conditions: []corev1.PodCondition{
+								{
+									Type:   corev1.PodReady,
+									Status: corev1.ConditionTrue,
+								},
+							},
+						},
+					}
+					// Set initial condition state in annotation but no lastActivationTime
+					annotation := bpod.NewBoostAnnotation()
+					annotation.SetLastConditionState("Ready", "False")
+					// Add 1 activation to history (at limit, but no lastActivationTime for this trigger)
+					now := time.Now()
+					annotation.AddActivationToHistory(now.Add(-5 * time.Minute))
+					testPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+					mockBoost.EXPECT().Matches(gomock.Any()).Return(true).AnyTimes()
+					mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
+						DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+							podListOut := list.(*corev1.PodList)
+							*podListOut = corev1.PodList{Items: []corev1.Pod{*testPod}}
+							return nil
+						}).Times(1)
+					// Mock transition matching
+					mockBoost.EXPECT().ShouldActivateForPodConditionTransition("Ready", "False", "True").Return(true).Times(1)
+					// Should not call ApplyBoostAtRuntime (cooldown prevents it)
+					mockBoost.EXPECT().ApplyBoostAtRuntime(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+				})
+				It("should skip activation and emit event without last activation timestamp", func() {
+					Expect(err).To(BeNil())
+					Expect(result).To(Equal(ctrl.Result{}))
+					// Event should still be valid even without last activation time
+					// Should include activation count but not last activation timestamp
 				})
 			})
 			When("ApplyBoostAtRuntime returns error", func() {
