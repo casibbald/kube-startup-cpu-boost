@@ -91,6 +91,16 @@ func (r *StartupCPUBoostReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		newBoostObj.Status.ActiveContainerBoosts = int32(stats.ActiveContainerBoosts)
 		newBoostObj.Status.TotalContainerBoosts = int32(stats.TotalContainerBoosts)
 
+		// Check for PodCreate triggers and emit activation events if needed
+		// PodCreate boosts are applied in the webhook, so we emit events when we see
+		// pods that were recently created with PodCreate boosts
+		if boost.ShouldActivateForPodCreate() {
+			if err := r.emitPodCreateActivationEvents(ctx, boost, log); err != nil {
+				log.Error(err, "failed to emit PodCreate activation events")
+				// Don't fail reconciliation, just log the error
+			}
+		}
+
 		// Check for ContainerRestart triggers and apply runtime boosts if needed
 		if boost.HasContainerRestartTrigger() {
 			if err := r.applyRuntimeBoostsForContainerRestart(ctx, boost, boostObj.Spec.Cooldown, log); err != nil {
@@ -275,6 +285,9 @@ func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForContainerRestart(ctx co
 			}
 			if applied {
 				log.Info("runtime boost applied successfully", "pod", pod.Name)
+				// Emit event for boost activation
+				eventMessage := fmt.Sprintf("CPU boost '%s' activated for pod '%s' via ContainerRestart trigger", boost.Name(), pod.Name)
+				r.Recorder.Event(pod, corev1.EventTypeNormal, "BoostActivated", eventMessage)
 			} else {
 				log.V(5).Info("boost not applied (likely already active)", "pod", pod.Name)
 			}
@@ -366,6 +379,9 @@ func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForPodConditionTransition(
 			}
 			if applied {
 				log.Info("runtime boost applied successfully", "pod", pod.Name)
+				// Emit event for boost activation
+				eventMessage := fmt.Sprintf("CPU boost '%s' activated for pod '%s' via PodConditionTransition trigger", boost.Name(), pod.Name)
+				r.Recorder.Event(pod, corev1.EventTypeNormal, "BoostActivated", eventMessage)
 			} else {
 				log.V(5).Info("boost not applied (likely already active)", "pod", pod.Name)
 			}
@@ -416,4 +432,72 @@ func (r *StartupCPUBoostReconciler) formatCooldownEventMessage(pod *corev1.Pod, 
 	message += fmt.Sprintf(". Timestamp: %s", now.Format(time.RFC3339))
 
 	return message
+}
+
+// emitPodCreateActivationEvents emits events for pods that were boosted via PodCreate trigger
+// PodCreate boosts are applied in the webhook, so we detect them by checking for pods with
+// PodCreate activation timestamps that were recently created
+func (r *StartupCPUBoostReconciler) emitPodCreateActivationEvents(ctx context.Context, boost boost.StartupCPUBoost, log logr.Logger) error {
+	// List all pods in the boost namespace
+	podList := &corev1.PodList{}
+	if err := r.Client.List(ctx, podList, client.InNamespace(boost.Namespace())); err != nil {
+		return fmt.Errorf("failed to list pods: %w", err)
+	}
+
+	// Filter to pods that match the boost selector
+	matchingPods := make([]*corev1.Pod, 0)
+	for i := range podList.Items {
+		pod := &podList.Items[i]
+		if boost.Matches(pod) {
+			matchingPods = append(matchingPods, pod)
+		}
+	}
+
+	now := time.Now()
+	// Only emit events for pods created within the last 5 minutes
+	// This avoids duplicate events while catching recent PodCreate activations
+	recentWindow := 5 * time.Minute
+
+	// For each matching pod, check if it has a PodCreate boost and emit event
+	for _, pod := range matchingPods {
+		// Skip if pod was created more than 5 minutes ago (avoid duplicate events)
+		if pod.CreationTimestamp.Time.Add(recentWindow).Before(now) {
+			continue
+		}
+
+		// Get pod annotation to check for PodCreate activation
+		annotation, err := bpod.BoostAnnotationFromPod(pod)
+		if err != nil {
+			// Pod doesn't have boost annotation yet, skip
+			continue
+		}
+
+		// Check if pod has PodCreate activation (lastActivationTime for PodCreate trigger)
+		triggerType := autoscaling.BoostTriggerTypePodCreate
+		lastActivationTime, exists := annotation.GetLastActivationTime(triggerType)
+		if !exists {
+			continue
+		}
+
+		// Only emit event if activation was recent (within last 5 minutes)
+		// This ensures we catch PodCreate activations without emitting duplicates
+		if now.Sub(lastActivationTime) > recentWindow {
+			continue
+		}
+
+		// Check if there's no current activation (meaning this is a fresh PodCreate boost)
+		// If there's a current activation, it might be from a runtime trigger, not PodCreate
+		currentActivation := annotation.GetCurrentActivation()
+		if currentActivation != nil && currentActivation.TriggerType != triggerType {
+			// Current activation is from a different trigger, skip
+			continue
+		}
+
+		// Emit event for PodCreate activation
+		eventMessage := fmt.Sprintf("CPU boost '%s' activated for pod '%s' via PodCreate trigger", boost.Name(), pod.Name)
+		r.Recorder.Event(pod, corev1.EventTypeNormal, "BoostActivated", eventMessage)
+		log.V(5).Info("emitted PodCreate activation event", "pod", pod.Name)
+	}
+
+	return nil
 }
