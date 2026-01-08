@@ -75,26 +75,7 @@ jobs:
           kubectl get pods -A || true
 
       - name: Configure containerd registry mirror
-        run: |
-          # Get registry IP
-          REGISTRY_IP=$(docker inspect kube-startup-cpu-boost-registry --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' | head -1)
-          echo "Registry IP: $REGISTRY_IP"
-          
-          # Configure containerd on all nodes
-          for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
-            echo "Configuring registry mirror on node: $node"
-            docker exec $node sh -c "
-              mkdir -p /etc/containerd
-              cat > /tmp/registry-config.toml <<TOML_EOF
-          [plugins.\"io.containerd.grpc.v1.cri\".registry.mirrors.\"localhost:5000\"]
-            endpoint = [\"http://${REGISTRY_IP}:5000\"]
-          [plugins.\"io.containerd.grpc.v1.cri\".registry.mirrors.\"kube-startup-cpu-boost-registry:5000\"]
-            endpoint = [\"http://${REGISTRY_IP}:5000\"]
-          TOML_EOF
-              cp /tmp/registry-config.toml /etc/containerd/config.toml.d/registry-config.toml
-              systemctl restart containerd || true
-            " || echo "Warning: Could not configure registry on $node"
-          done
+        run: python3 scripts/configure_containerd_registry.py
 
       - name: Verify cluster
         run: |
