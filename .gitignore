@@ -24,6 +24,7 @@ bin/
 demo-app/target
 .vscode
 docs/
+developer-setup.md
 coverage/
 coverage.html
 coverage.out
