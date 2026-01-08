@@ -35,6 +35,9 @@ const (
 	BoostLabelKey      = "autoscaling.x-k8s.io/startup-cpu-boost"
 	BoostAnnotationKey = "autoscaling.x-k8s.io/startup-cpu-boost"
 	EmptyPatchString   = "{}"
+	// ActivationStateVersion is the current version of the ActivationState format
+	// Increment this when making breaking changes to the state structure
+	ActivationStateVersion = "1"
 )
 
 type BoostPodAnnotation struct {
@@ -48,7 +51,13 @@ type BoostPodAnnotation struct {
 }
 
 // ActivationState tracks the state of boost activations for a pod
+// State is stored in pod annotations to survive controller restarts
 type ActivationState struct {
+	// Version is the version of the ActivationState format
+	// Used for future migration and backward compatibility
+	// Current version: "1"
+	Version string `json:"version,omitempty"`
+
 	// CurrentActivation is the currently active boost activation, if any
 	CurrentActivation *ActivationStateEntry `json:"currentActivation,omitempty"`
 
@@ -104,6 +113,7 @@ func NewBoostAnnotation() *BoostPodAnnotation {
 		InitCPURequests: make(map[string]string),
 		InitCPULimits:   make(map[string]string),
 		ActivationState: &ActivationState{
+			Version:             ActivationStateVersion,
 			LastActivationTime:  make(map[string]string),
 			ActivationHistory:   make([]string, 0),
 			LastRestartCounts:   make(map[string]int32),
@@ -132,10 +142,15 @@ func BoostAnnotationFromPod(pod *corev1.Pod) (*BoostPodAnnotation, error) {
 	// Ensure ActivationState is initialized for backward compatibility
 	if annotation.ActivationState == nil {
 		annotation.ActivationState = &ActivationState{
+			Version:            ActivationStateVersion,
 			LastActivationTime: make(map[string]string),
 			ActivationHistory:  make([]string, 0),
 			LastRestartCounts:  make(map[string]int32),
 		}
+	}
+	// Set version if missing (backward compatibility with old annotations)
+	if annotation.ActivationState.Version == "" {
+		annotation.ActivationState.Version = ActivationStateVersion
 	}
 	if annotation.ActivationState.LastActivationTime == nil {
 		annotation.ActivationState.LastActivationTime = make(map[string]string)
@@ -258,10 +273,15 @@ func (p *revertBoostResourcesPatch) Data(obj client.Object) ([]byte, error) {
 func (a *BoostPodAnnotation) GetActivationState() *ActivationState {
 	if a.ActivationState == nil {
 		a.ActivationState = &ActivationState{
+			Version:            ActivationStateVersion,
 			LastActivationTime: make(map[string]string),
 			ActivationHistory:  make([]string, 0),
 			LastRestartCounts:  make(map[string]int32),
 		}
+	}
+	// Set version if missing (backward compatibility)
+	if a.ActivationState.Version == "" {
+		a.ActivationState.Version = ActivationStateVersion
 	}
 	if a.ActivationState.LastActivationTime == nil {
 		a.ActivationState.LastActivationTime = make(map[string]string)
@@ -271,6 +291,9 @@ func (a *BoostPodAnnotation) GetActivationState() *ActivationState {
 	}
 	if a.ActivationState.LastRestartCounts == nil {
 		a.ActivationState.LastRestartCounts = make(map[string]int32)
+	}
+	if a.ActivationState.LastConditionStates == nil {
+		a.ActivationState.LastConditionStates = make(map[string]string)
 	}
 	return a.ActivationState
 }

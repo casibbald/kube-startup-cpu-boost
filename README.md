@@ -352,12 +352,48 @@ spec:
 
 #### Cooldown State Persistence
 
-Cooldown state is stored in pod annotations and survives controller restarts:
+Cooldown state is stored in pod annotations (not controller memory) and
+survives controller restarts:
 
-* Last activation time per trigger type
-* Activation history (timestamps from the last hour)
-* Automatic cleanup of old timestamps (>1 hour)
-* Defensive handling of malformed or future timestamps (clock skew protection)
+* **State Storage**: All cooldown state is persisted in pod annotations as
+  JSON-encoded data
+* **Versioned Format**: State format includes a version field ("1") for future
+  migration support
+* **Backward Compatibility**: Pods without cooldown state or with old state
+  formats are handled gracefully
+* **State Components**:
+  * Last activation time per trigger type
+  * Activation history (timestamps from the last hour)
+  * Automatic cleanup of old timestamps (>1 hour)
+  * Defensive handling of malformed or future timestamps (clock skew
+    protection)
+
+**State Format:**
+
+The cooldown state is stored in the pod annotation
+`autoscaling.x-k8s.io/startup-cpu-boost` as part of the `activationState`
+object:
+
+```json
+{
+  "activationState": {
+    "version": "1",
+    "lastActivationTime": {
+      "ContainerRestart": "2024-01-15T10:30:00Z"
+    },
+    "activationHistory": [
+      "2024-01-15T10:30:00Z",
+      "2024-01-15T10:25:00Z"
+    ]
+  }
+}
+```
+
+**Controller Restart Behavior:**
+
+When the controller restarts, it reads the cooldown state from pod annotations
+and continues enforcing cooldown policies without interruption. This ensures
+reliable cooldown enforcement even during controller upgrades or failures.
 
 #### Observability
 
