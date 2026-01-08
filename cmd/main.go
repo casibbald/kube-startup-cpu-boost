@@ -123,6 +123,7 @@ func main() {
 		HealthProbeBindAddress: cfg.HealthProbeBindAddr,
 		LeaderElection:         cfg.LeaderElection,
 		LeaderElectionID:       leaderElectionID,
+		LeaderElectionNamespace: cfg.Namespace,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")

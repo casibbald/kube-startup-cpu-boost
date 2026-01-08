@@ -2,6 +2,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: kube-startup-cpu-boost-internal-cert-role
+  namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/component: internal-cert
     app.kubernetes.io/created-by: kube-startup-cpu-boost
@@ -25,6 +26,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: kube-startup-cpu-boost-internal-cert-rolebinding
+  namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/component: internal-cert
     app.kubernetes.io/created-by: kube-startup-cpu-boost
