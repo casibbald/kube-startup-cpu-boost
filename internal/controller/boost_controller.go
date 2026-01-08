@@ -290,6 +290,9 @@ func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForContainerRestart(ctx co
 				r.Recorder.Event(pod, corev1.EventTypeNormal, "BoostActivated", eventMessage)
 			} else {
 				log.V(5).Info("boost not applied (likely already active)", "pod", pod.Name)
+				// Emit event for skipped activation due to idempotency (boost already active)
+				eventMessage := r.formatIdempotencySkipEventMessage(pod, boost, triggerType, annotation)
+				r.Recorder.Event(pod, corev1.EventTypeNormal, "BoostSkippedActive", eventMessage)
 			}
 		}
 	}
@@ -384,6 +387,9 @@ func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForPodConditionTransition(
 				r.Recorder.Event(pod, corev1.EventTypeNormal, "BoostActivated", eventMessage)
 			} else {
 				log.V(5).Info("boost not applied (likely already active)", "pod", pod.Name)
+				// Emit event for skipped activation due to idempotency (boost already active)
+				eventMessage := r.formatIdempotencySkipEventMessage(pod, boost, triggerType, annotation)
+				r.Recorder.Event(pod, corev1.EventTypeNormal, "BoostSkippedActive", eventMessage)
 			}
 		}
 	}
@@ -429,6 +435,39 @@ func (r *StartupCPUBoostReconciler) formatCooldownEventMessage(pod *corev1.Pod, 
 	}
 
 	// Add current timestamp
+	message += fmt.Sprintf(". Timestamp: %s", now.Format(time.RFC3339))
+
+	return message
+}
+
+// formatIdempotencySkipEventMessage formats an event message for idempotency-skipped activations
+// Includes boost name, pod name, trigger type, and current activation details
+func (r *StartupCPUBoostReconciler) formatIdempotencySkipEventMessage(pod *corev1.Pod, boost boost.StartupCPUBoost, triggerType autoscaling.BoostTriggerType, annotation *bpod.BoostPodAnnotation) string {
+	now := time.Now()
+	boostName := boost.Name()
+	podName := pod.Name
+
+	// Build message
+	message := fmt.Sprintf("Boost '%s' activation skipped for pod '%s'", boostName, podName)
+	message += fmt.Sprintf(" (trigger: %s)", triggerType)
+	message += ". Reason: boost already active (idempotency)"
+
+	// Add current activation details if available
+	currentActivation := annotation.GetCurrentActivation()
+	if currentActivation != nil {
+		// Parse start time
+		startTime, err := time.Parse(time.RFC3339, currentActivation.StartTime)
+		if err == nil {
+			duration := now.Sub(startTime)
+			message += fmt.Sprintf(". Current activation started: %s (duration: %v)", startTime.Format(time.RFC3339), duration.Round(time.Second))
+		}
+		message += fmt.Sprintf(". Current activation trigger: %s", currentActivation.TriggerType)
+		if currentActivation.ExpiryConditionType != "" {
+			message += fmt.Sprintf(", expiry: %s", currentActivation.ExpiryConditionType)
+		}
+	}
+
+	// Add timestamp
 	message += fmt.Sprintf(". Timestamp: %s", now.Format(time.RFC3339))
 
 	return message
