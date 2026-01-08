@@ -590,6 +590,94 @@ var _ = Describe("BoostController", func() {
 				// Event should include activation count information
 			})
 		})
+		When("boost has ContainerRestart trigger and boost is already active (idempotency)", func() {
+			var (
+				totalContainerBoosts  = 10
+				activeContainerBoosts = 5
+				testPod               *corev1.Pod
+				recorder              *testEventRecorder
+			)
+			BeforeEach(func() {
+				recorder = newTestEventRecorder()
+				boostCtrl.Recorder = recorder
+				stats := boost.StartupCPUBoostStats{
+					TotalContainerBoosts:  totalContainerBoosts,
+					ActiveContainerBoosts: activeContainerBoosts,
+				}
+				mockManager.EXPECT().GetRegularCPUBoost(gomock.Any(), gomock.Eq(name),
+					gomock.Eq(namespace)).Times(1).Return(mockBoost, true)
+				mockBoost.EXPECT().Stats().Times(1).Return(stats)
+				mockBoost.EXPECT().ShouldActivateForPodCreate().Return(false).AnyTimes()
+				mockBoost.EXPECT().HasContainerRestartTrigger().Return(true).Times(1)
+				mockBoost.EXPECT().HasPodConditionTransitionTrigger().Return(false).AnyTimes()
+				mockBoost.EXPECT().Namespace().Return(namespace).AnyTimes()
+				mockBoost.EXPECT().Name().Return(name).AnyTimes()
+				mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName),
+					gomock.Any()).
+					Times(1).
+					DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object,
+						opts ...client.GetOption) error {
+						boostObj := obj.(*autoscaling.StartupCPUBoost)
+						boostObj.Name = name
+						boostObj.Namespace = namespace
+						return nil
+					})
+				testPod = &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-pod",
+						Namespace: namespace,
+						Labels: map[string]string{
+							"app": "test",
+						},
+						Annotations: make(map[string]string),
+					},
+					Status: corev1.PodStatus{
+						ContainerStatuses: []corev1.ContainerStatus{
+							{
+								Name:         "container-one",
+								RestartCount: 1, // Increased from 0
+							},
+						},
+					},
+				}
+				// Set initial restart count and current activation (boost already active)
+				annotation := bpod.NewBoostAnnotation()
+				annotation.SetLastRestartCount("container-one", 0)
+				// Set current activation to indicate boost is already active
+				startTime := time.Now().Add(-2 * time.Minute)
+				duration := int64(300) // 5 minutes
+				annotation.SetCurrentActivation(autoscaling.BoostTriggerTypeContainerRestart, startTime, "FixedDuration", &duration, nil)
+				testPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
+				mockBoost.EXPECT().Matches(gomock.Any()).Return(true).AnyTimes()
+				mockClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+						podListOut := list.(*corev1.PodList)
+						*podListOut = corev1.PodList{Items: []corev1.Pod{*testPod}}
+						return nil
+					}).Times(1)
+				mockBoost.EXPECT().ShouldActivateForContainerRestart("container-one").Return(true).AnyTimes()
+				// ApplyBoostAtRuntime returns false (boost already active - idempotent)
+				mockBoost.EXPECT().ApplyBoostAtRuntime(gomock.Any(), gomock.Any(), autoscaling.BoostTriggerTypeContainerRestart).
+					Return(false, nil).Times(1)
+				mockSubResClient := mock.NewMockSubResourceClient(mockCtrl)
+				mockSubResClient.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+				mockClient.EXPECT().Status().Return(mockSubResClient).AnyTimes()
+			})
+			It("should emit BoostSkippedActive event for idempotent case", func() {
+				Expect(err).To(BeNil())
+				Expect(result).To(Equal(ctrl.Result{}))
+				// Verify event was emitted
+				Expect(recorder.Count()).To(Equal(1))
+				events := recorder.GetEvents()
+				Expect(events[0].reason).To(Equal("BoostSkippedActive"))
+				Expect(events[0].eventtype).To(Equal("Normal"))
+				Expect(events[0].message).To(ContainSubstring("already active"))
+				Expect(events[0].message).To(ContainSubstring("idempotency"))
+				Expect(events[0].message).To(ContainSubstring(name))               // boost name
+				Expect(events[0].message).To(ContainSubstring("test-pod"))         // pod name
+				Expect(events[0].message).To(ContainSubstring("ContainerRestart")) // trigger type
+			})
+		})
 		When("boost has ContainerRestart trigger but List fails", func() {
 			var (
 				totalContainerBoosts  = 10
@@ -637,6 +725,8 @@ var _ = Describe("BoostController", func() {
 				mockSubResClient      *mock.MockSubResourceClient
 			)
 			BeforeEach(func() {
+				// Initialize event recorder
+				boostCtrl.Recorder = &noOpEventRecorder{}
 				stats := boost.StartupCPUBoostStats{
 					TotalContainerBoosts:  totalContainerBoosts,
 					ActiveContainerBoosts: activeContainerBoosts,
@@ -1294,7 +1384,10 @@ var _ = Describe("BoostController", func() {
 			})
 			When("ApplyBoostAtRuntime returns false (boost already active)", func() {
 				var testPod *corev1.Pod
+				var recorder *testEventRecorder
 				BeforeEach(func() {
+					recorder = newTestEventRecorder()
+					boostCtrl.Recorder = recorder
 					testPod = &corev1.Pod{
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      "test-pod",
@@ -1313,9 +1406,13 @@ var _ = Describe("BoostController", func() {
 							},
 						},
 					}
-					// Set initial condition state
+					// Set initial condition state and current activation (boost already active)
 					annotation := bpod.NewBoostAnnotation()
 					annotation.SetLastConditionState("Ready", "False")
+					// Set current activation to indicate boost is already active
+					startTime := time.Now().Add(-2 * time.Minute)
+					duration := int64(300) // 5 minutes
+					annotation.SetCurrentActivation(autoscaling.BoostTriggerTypePodConditionTransition, startTime, "FixedDuration", &duration, nil)
 					testPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
 					mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName), gomock.Any()).
 						DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
@@ -1337,10 +1434,18 @@ var _ = Describe("BoostController", func() {
 					mockBoost.EXPECT().ApplyBoostAtRuntime(gomock.Any(), gomock.Any(), autoscaling.BoostTriggerTypePodConditionTransition).
 						Return(false, nil).Times(1)
 				})
-				It("should handle idempotent case gracefully", func() {
-					// Boost already active, so applied=false is expected
+				It("should emit BoostSkippedActive event for idempotent case", func() {
 					Expect(err).To(BeNil())
 					Expect(result).To(Equal(ctrl.Result{}))
+					// Verify event was emitted
+					Expect(recorder.Count()).To(Equal(1))
+					events := recorder.GetEvents()
+					Expect(events[0].reason).To(Equal("BoostSkippedActive"))
+					Expect(events[0].eventtype).To(Equal("Normal"))
+					Expect(events[0].message).To(ContainSubstring("already active"))
+					Expect(events[0].message).To(ContainSubstring("idempotency"))
+					Expect(events[0].message).To(ContainSubstring(name))       // boost name
+					Expect(events[0].message).To(ContainSubstring("test-pod")) // pod name
 				})
 			})
 			When("patch fails when clearing expired activation", func() {
@@ -1663,7 +1768,7 @@ var _ = Describe("BoostController", func() {
 				Expect(recorder.Count()).To(Equal(1))
 			})
 		})
-		Describe("Edge Case 6: Idempotent Case - No Event", func() {
+		Describe("Edge Case 6: Idempotent Case - BoostSkippedActive Event", func() {
 			BeforeEach(func() {
 				stats := boost.StartupCPUBoostStats{
 					TotalContainerBoosts:  5,
@@ -1689,6 +1794,10 @@ var _ = Describe("BoostController", func() {
 					})
 				annotation := bpod.NewBoostAnnotation()
 				annotation.SetLastRestartCount("container-one", 0)
+				// Set current activation to indicate boost is already active
+				startTime := time.Now().Add(-2 * time.Minute)
+				duration := int64(300) // 5 minutes
+				annotation.SetCurrentActivation(autoscaling.BoostTriggerTypeContainerRestart, startTime, "FixedDuration", &duration, nil)
 				testPod := &corev1.Pod{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "pod-1",
@@ -1718,10 +1827,15 @@ var _ = Describe("BoostController", func() {
 				mockSubResClient.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 				mockClient.EXPECT().Status().Return(mockSubResClient).AnyTimes()
 			})
-			It("should not emit event when boost is already active", func() {
+			It("should emit BoostSkippedActive event when boost is already active", func() {
 				Expect(err).To(BeNil())
-				// No event should be emitted for idempotent case
-				Expect(recorder.Count()).To(Equal(0))
+				// Event should be emitted for idempotent case (US-019)
+				Expect(recorder.Count()).To(Equal(1))
+				events := recorder.GetEvents()
+				Expect(events[0].reason).To(Equal("BoostSkippedActive"))
+				Expect(events[0].eventtype).To(Equal("Normal"))
+				Expect(events[0].message).To(ContainSubstring("already active"))
+				Expect(events[0].message).To(ContainSubstring("idempotency"))
 			})
 		})
 		Describe("Edge Case 7: Event Emission Failure", func() {

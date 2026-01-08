@@ -443,6 +443,52 @@ Events are searchable and observable through standard Kubernetes tooling,
 enabling cluster administrators to monitor cooldown policy effectiveness and
 tune cooldown parameters based on actual usage patterns.
 
+#### Boost Skipped Events (Idempotency)
+
+When a boost activation is skipped because the boost is already active
+(idempotency check), a Kubernetes event is emitted:
+
+**Event Properties:**
+
+* Event type: `Normal`
+* Event reason: `BoostSkippedActive`
+* Event message includes:
+  * Boost name
+  * Pod name
+  * Trigger type (ContainerRestart or PodConditionTransition)
+  * Reason: boost already active (idempotency)
+  * Current activation details (start time, duration, trigger type, expiry type)
+  * Current timestamp
+
+**Example Event Message:**
+
+```yaml
+Boost 'my-boost' activation skipped for pod 'app-pod-123' (trigger: ContainerRestart). 
+Reason: boost already active (idempotency). 
+Current activation started: 2024-01-15T10:30:00Z (duration: 2m0s). 
+Current activation trigger: ContainerRestart, expiry: FixedDuration. 
+Timestamp: 2024-01-15T10:32:00Z
+```
+
+**Viewing Events:**
+
+You can view these events using:
+
+```bash
+# View all idempotency-skipped events
+kubectl get events --field-selector reason=BoostSkippedActive
+
+# View events for a specific pod
+kubectl get events --field-selector involvedObject.name=app-pod-123
+
+# View events in a specific namespace
+kubectl get events -n my-namespace --field-selector reason=BoostSkippedActive
+```
+
+These events help cluster administrators understand when boost activations are
+skipped due to idempotency, indicating that a boost is already active and
+preventing duplicate activations.
+
 ## Configuration
 
 Kube Startup CPU Boost operator can be configured with environmental variables.
