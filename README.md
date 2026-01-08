@@ -361,18 +361,51 @@ Cooldown state is stored in pod annotations and survives controller restarts:
 
 #### Observability
 
-When a boost activation is skipped due to cooldown, a Kubernetes event is
-emitted:
+When a boost activation is skipped due to cooldown, a detailed Kubernetes
+event is emitted for monitoring and troubleshooting:
+
+**Event Properties:**
 
 * Event type: `Warning`
 * Event reason: `BoostSkippedCooldown`
-* Event message includes the reason (minimum interval or rate limit exceeded)
+* Event message includes:
+  * Boost name
+  * Pod name
+  * Trigger type (ContainerRestart or PodConditionTransition)
+  * Reason (minimum interval or rate limit exceeded)
+  * Last activation timestamp (if applicable)
+  * Remaining cooldown time (if minimum interval triggered)
+  * Current activation count (if rate limit triggered)
+  * Current timestamp
+
+**Example Event Message:**
+
+```yaml
+Boost 'my-boost' activation skipped for pod 'app-pod-123' (trigger: ContainerRestart). 
+Reason: minimum interval not met (remaining: 4m0s). 
+Last activation: 2024-01-15T10:30:00Z, remaining cooldown: 4m0s. 
+Current activations in last hour: 2/5. 
+Timestamp: 2024-01-15T10:31:00Z
+```
+
+**Viewing Events:**
 
 You can view these events using:
 
 ```bash
+# View all cooldown-skipped events
 kubectl get events --field-selector reason=BoostSkippedCooldown
+
+# View events for a specific pod
+kubectl get events --field-selector involvedObject.name=app-pod-123
+
+# View events in a specific namespace
+kubectl get events -n my-namespace --field-selector reason=BoostSkippedCooldown
 ```
+
+Events are searchable and observable through standard Kubernetes tooling,
+enabling cluster administrators to monitor cooldown policy effectiveness and
+tune cooldown parameters based on actual usage patterns.
 
 ## Configuration
 

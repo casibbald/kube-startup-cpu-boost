@@ -17,6 +17,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -260,8 +261,9 @@ func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForContainerRestart(ctx co
 			shouldSkip, reason := annotation.ShouldSkipDueToCooldown(triggerType, cooldownPolicy)
 			if shouldSkip {
 				log.Info("skipping boost activation due to cooldown", "pod", pod.Name, "reason", reason)
-				// Emit event for skipped activation
-				r.Recorder.Event(pod, corev1.EventTypeWarning, "BoostSkippedCooldown", fmt.Sprintf("Boost activation skipped for pod %s: %s", pod.Name, reason))
+				// Emit event for skipped activation with detailed information
+				eventMessage := r.formatCooldownEventMessage(pod, boost, triggerType, cooldownPolicy, annotation, reason)
+				r.Recorder.Event(pod, corev1.EventTypeWarning, "BoostSkippedCooldown", eventMessage)
 				continue
 			}
 
@@ -350,8 +352,9 @@ func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForPodConditionTransition(
 			shouldSkip, reason := annotation.ShouldSkipDueToCooldown(triggerType, cooldownPolicy)
 			if shouldSkip {
 				log.Info("skipping boost activation due to cooldown", "pod", pod.Name, "reason", reason)
-				// Emit event for skipped activation
-				r.Recorder.Event(pod, corev1.EventTypeWarning, "BoostSkippedCooldown", fmt.Sprintf("Boost activation skipped for pod %s: %s", pod.Name, reason))
+				// Emit event for skipped activation with detailed information
+				eventMessage := r.formatCooldownEventMessage(pod, boost, triggerType, cooldownPolicy, annotation, reason)
+				r.Recorder.Event(pod, corev1.EventTypeWarning, "BoostSkippedCooldown", eventMessage)
 				continue
 			}
 
@@ -370,4 +373,47 @@ func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForPodConditionTransition(
 	}
 
 	return nil
+}
+
+// formatCooldownEventMessage formats a detailed event message for cooldown-skipped activations
+// Includes boost name, pod name, reason, and relevant timestamps
+func (r *StartupCPUBoostReconciler) formatCooldownEventMessage(pod *corev1.Pod, boost boost.StartupCPUBoost, triggerType autoscaling.BoostTriggerType, cooldownPolicy *autoscaling.CooldownPolicy, annotation *bpod.BoostPodAnnotation, reason string) string {
+	now := time.Now()
+	boostName := boost.Name()
+	podName := pod.Name
+
+	// Build detailed message
+	message := fmt.Sprintf("Boost '%s' activation skipped for pod '%s'", boostName, podName)
+
+	// Add trigger type information
+	message += fmt.Sprintf(" (trigger: %s)", triggerType)
+
+	// Add reason
+	message += fmt.Sprintf(". Reason: %s", reason)
+
+	// Add timestamp information
+	if cooldownPolicy != nil {
+		// Add minimum interval information if applicable
+		if cooldownPolicy.MinIntervalSeconds != nil && *cooldownPolicy.MinIntervalSeconds > 0 {
+			lastActivationTime, exists := annotation.GetLastActivationTime(triggerType)
+			if exists {
+				elapsed := now.Sub(lastActivationTime)
+				remaining := time.Duration(*cooldownPolicy.MinIntervalSeconds)*time.Second - elapsed
+				if remaining > 0 {
+					message += fmt.Sprintf(". Last activation: %s, remaining cooldown: %v", lastActivationTime.Format(time.RFC3339), remaining.Round(time.Second))
+				}
+			}
+		}
+
+		// Add maximum activations per hour information if applicable
+		if cooldownPolicy.MaxActivationsPerHour != nil && *cooldownPolicy.MaxActivationsPerHour > 0 {
+			activationCount := annotation.GetActivationHistoryCount()
+			message += fmt.Sprintf(". Current activations in last hour: %d/%d", activationCount, *cooldownPolicy.MaxActivationsPerHour)
+		}
+	}
+
+	// Add current timestamp
+	message += fmt.Sprintf(". Timestamp: %s", now.Format(time.RFC3339))
+
+	return message
 }
