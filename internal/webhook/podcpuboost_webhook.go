@@ -18,8 +18,10 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/go-logr/logr"
+	autoscaling "github.com/google/kube-startup-cpu-boost/api/v1alpha1"
 	"github.com/google/kube-startup-cpu-boost/internal/boost"
 	bpod "github.com/google/kube-startup-cpu-boost/internal/boost/pod"
 	corev1 "k8s.io/api/core/v1"
@@ -125,6 +127,18 @@ func (h *podCPUBoostHandler) boostContainerResources(ctx context.Context, b boos
 		log.Info("container resources increased")
 	}
 	if len(annotation.InitCPULimits) > 0 || len(annotation.InitCPURequests) > 0 {
+		// Set activation state for PodCreate trigger
+		// This tracks when the boost was activated and enables cooldown enforcement
+		now := time.Now()
+		triggerType := autoscaling.BoostTriggerTypePodCreate
+
+		// Store last activation time for cooldown policy enforcement
+		// Note: SetCurrentActivation is not set here because PodCreate boost expiry
+		// is handled by the controller based on DurationPolicy. The controller will
+		// set CurrentActivation when it processes the pod.
+		annotation.SetLastActivationTime(triggerType, now)
+		annotation.AddActivationToHistory(now)
+
 		if pod.Annotations == nil {
 			pod.Annotations = make(map[string]string)
 		}

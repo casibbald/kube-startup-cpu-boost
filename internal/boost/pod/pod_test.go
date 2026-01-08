@@ -415,8 +415,8 @@ var _ = Describe("Pod", func() {
 				Expect(found).To(BeFalse())
 			})
 			It("tracks multiple trigger types independently", func() {
-				time1 := time.Now()
-				time2 := time.Now().Add(5 * time.Minute)
+				time1 := time.Now().Add(-10 * time.Minute)
+				time2 := time.Now().Add(-5 * time.Minute)
 				annotation.SetLastActivationTime(autoscaling.BoostTriggerTypePodCreate, time1)
 				annotation.SetLastActivationTime(autoscaling.BoostTriggerTypeContainerRestart, time2)
 				retrieved1, found1 := annotation.GetLastActivationTime(autoscaling.BoostTriggerTypePodCreate)
@@ -425,6 +425,23 @@ var _ = Describe("Pod", func() {
 				Expect(found2).To(BeTrue())
 				Expect(retrieved1.Unix()).To(Equal(time1.Unix()))
 				Expect(retrieved2.Unix()).To(Equal(time2.Unix()))
+			})
+			It("returns false for malformed timestamp", func() {
+				triggerType := autoscaling.BoostTriggerTypeContainerRestart
+				// Manually set invalid timestamp
+				state := annotation.GetActivationState()
+				state.LastActivationTime[string(triggerType)] = "invalid-timestamp"
+				_, found := annotation.GetLastActivationTime(triggerType)
+				Expect(found).To(BeFalse())
+			})
+			It("returns false for future timestamp (clock skew protection)", func() {
+				triggerType := autoscaling.BoostTriggerTypeContainerRestart
+				// Set timestamp in the future (simulating clock skew or corruption)
+				futureTime := time.Now().Add(1 * time.Hour)
+				annotation.SetLastActivationTime(triggerType, futureTime)
+				// GetLastActivationTime should reject future timestamps
+				_, found := annotation.GetLastActivationTime(triggerType)
+				Expect(found).To(BeFalse())
 			})
 		})
 		Describe("Activation history", func() {
@@ -941,6 +958,35 @@ var _ = Describe("Pod", func() {
 					}
 					// No previous activation time set
 					shouldSkip, reason := annotation.ShouldSkipDueToCooldown(triggerType, cooldownPolicy)
+					Expect(shouldSkip).To(BeFalse())
+					Expect(reason).To(BeEmpty())
+				})
+				It("should not skip if future timestamp detected (clock skew protection)", func() {
+					interval := int32(300) // 5 minutes
+					cooldownPolicy := &autoscaling.CooldownPolicy{
+						MinIntervalSeconds: &interval,
+					}
+					// Set future timestamp (simulating clock skew or corruption)
+					// This should be treated as invalid and allow activation
+					futureTime := time.Now().Add(1 * time.Hour)
+					// Manually set future timestamp (bypassing SetLastActivationTime which would format it)
+					state := annotation.GetActivationState()
+					state.LastActivationTime[string(triggerType)] = futureTime.Format(time.RFC3339)
+					shouldSkip, reason := annotation.ShouldSkipDueToCooldown(triggerType, cooldownPolicy)
+					// Future timestamps are treated as invalid, so should not skip
+					Expect(shouldSkip).To(BeFalse())
+					Expect(reason).To(BeEmpty())
+				})
+				It("should not skip if malformed timestamp", func() {
+					interval := int32(300) // 5 minutes
+					cooldownPolicy := &autoscaling.CooldownPolicy{
+						MinIntervalSeconds: &interval,
+					}
+					// Set malformed timestamp
+					state := annotation.GetActivationState()
+					state.LastActivationTime[string(triggerType)] = "invalid-timestamp"
+					shouldSkip, reason := annotation.ShouldSkipDueToCooldown(triggerType, cooldownPolicy)
+					// Malformed timestamps are treated as invalid, so should not skip
 					Expect(shouldSkip).To(BeFalse())
 					Expect(reason).To(BeEmpty())
 				})

@@ -349,6 +349,8 @@ func (a *BoostPodAnnotation) IsActivationExpired(pod *corev1.Pod) bool {
 }
 
 // GetLastActivationTime returns the last activation time for a given trigger type
+// Returns (time, true) if found and valid, (zero time, false) if not found or invalid
+// Invalid timestamps (malformed or future) are treated as not found
 func (a *BoostPodAnnotation) GetLastActivationTime(triggerType autoscaling.BoostTriggerType) (time.Time, bool) {
 	state := a.GetActivationState()
 	timeStr, ok := state.LastActivationTime[string(triggerType)]
@@ -357,6 +359,14 @@ func (a *BoostPodAnnotation) GetLastActivationTime(triggerType autoscaling.Boost
 	}
 	t, err := time.Parse(time.RFC3339, timeStr)
 	if err != nil {
+		// Malformed timestamp - treat as not found
+		return time.Time{}, false
+	}
+	// Check for future timestamps (clock skew or manual corruption)
+	// Future timestamps are treated as invalid to prevent bypassing cooldown
+	now := time.Now()
+	if t.After(now) {
+		// Future timestamp detected - treat as invalid
 		return time.Time{}, false
 	}
 	return t, true
@@ -411,6 +421,15 @@ func (a *BoostPodAnnotation) ShouldSkipDueToCooldown(triggerType autoscaling.Boo
 		lastActivationTime, exists := a.GetLastActivationTime(triggerType)
 		if exists {
 			elapsed := now.Sub(lastActivationTime)
+			// Handle edge case: negative elapsed time (future timestamp)
+			// This can happen due to clock skew or manual annotation corruption
+			// Treat as invalid timestamp - allow activation
+			if elapsed < 0 {
+				// Future timestamp detected - treat as no previous activation
+				return false, ""
+			}
+			// Check for overflow: very large intervals could cause issues
+			// Max int32 seconds = ~68 years, which is reasonable
 			minInterval := time.Duration(*cooldownPolicy.MinIntervalSeconds) * time.Second
 			if elapsed < minInterval {
 				remaining := minInterval - elapsed
