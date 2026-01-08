@@ -489,6 +489,53 @@ These events help cluster administrators understand when boost activations are
 skipped due to idempotency, indicating that a boost is already active and
 preventing duplicate activations.
 
+#### Boost Expiration Events
+
+When a boost expires (durationPolicy met), a Kubernetes event is emitted to
+track the boost lifecycle end-to-end:
+
+**Event Properties:**
+
+* Event type: `Normal`
+* Event reason: `BoostExpired`
+* Event message includes:
+  * Boost name
+  * Pod name
+  * Trigger type (ContainerRestart or PodConditionTransition)
+  * Total boost duration (calculated from activation start time)
+  * Duration policy type (FixedDuration or PodCondition)
+  * Duration policy details (duration value or condition type/status)
+  * Activation start timestamp
+  * Expiration timestamp
+
+**Example Event Message:**
+
+```yaml
+CPU boost 'my-boost' expired for pod 'app-pod-123' (trigger: ContainerRestart). 
+Total boost duration: 5m0s. 
+Duration policy type: FixedDuration (5m0s). 
+Activation started: 2024-01-15T10:30:00Z. 
+Expired at: 2024-01-15T10:35:00Z
+```
+
+**Viewing Events:**
+
+You can view these events using:
+
+```bash
+# View all expiration events
+kubectl get events --field-selector reason=BoostExpired
+
+# View events for a specific pod
+kubectl get events --field-selector involvedObject.name=app-pod-123
+
+# View events in a specific namespace
+kubectl get events -n my-namespace --field-selector reason=BoostExpired
+```
+
+These events provide visibility into boost lifecycle, helping cluster
+administrators track when boosts expire and understand boost duration patterns.
+
 ## Configuration
 
 Kube Startup CPU Boost operator can be configured with environmental variables.

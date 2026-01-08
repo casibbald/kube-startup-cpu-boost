@@ -723,10 +723,12 @@ var _ = Describe("BoostController", func() {
 				totalContainerBoosts  = 10
 				activeContainerBoosts = 5
 				mockSubResClient      *mock.MockSubResourceClient
+				recorder              *testEventRecorder
 			)
 			BeforeEach(func() {
 				// Initialize event recorder
-				boostCtrl.Recorder = &noOpEventRecorder{}
+				recorder = newTestEventRecorder()
+				boostCtrl.Recorder = recorder
 				stats := boost.StartupCPUBoostStats{
 					TotalContainerBoosts:  totalContainerBoosts,
 					ActiveContainerBoosts: activeContainerBoosts,
@@ -803,9 +805,28 @@ var _ = Describe("BoostController", func() {
 				mockSubResClient.EXPECT().Update(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 				mockClient.EXPECT().Status().Return(mockSubResClient).AnyTimes()
 			})
-			It("should clear expired activation", func() {
+			It("should clear expired activation and emit BoostExpired event", func() {
 				Expect(err).To(BeNil())
 				Expect(result).To(Equal(ctrl.Result{}))
+				// Verify expiration event was emitted (may also have BoostSkippedActive if boost tries to reapply)
+				Expect(recorder.Count()).To(BeNumerically(">=", 1))
+				events := recorder.GetEvents()
+				// Find the BoostExpired event
+				var expiredEvent *testEvent
+				for i := range events {
+					if events[i].reason == "BoostExpired" {
+						expiredEvent = &events[i]
+						break
+					}
+				}
+				Expect(expiredEvent).NotTo(BeNil())
+				Expect(expiredEvent.eventtype).To(Equal("Normal"))
+				Expect(expiredEvent.message).To(ContainSubstring("expired"))
+				Expect(expiredEvent.message).To(ContainSubstring(name))                   // boost name
+				Expect(expiredEvent.message).To(ContainSubstring("pod-1"))                // pod name
+				Expect(expiredEvent.message).To(ContainSubstring("ContainerRestart"))     // trigger type
+				Expect(expiredEvent.message).To(ContainSubstring("FixedDuration"))        // duration policy type
+				Expect(expiredEvent.message).To(ContainSubstring("Total boost duration")) // duration
 			})
 		})
 	})
@@ -972,6 +993,7 @@ var _ = Describe("BoostController", func() {
 			})
 			When("matching pods with expired activation", func() {
 				var testPod *corev1.Pod
+				var recorder *testEventRecorder
 				BeforeEach(func() {
 					testPod = &corev1.Pod{
 						ObjectMeta: metav1.ObjectMeta{
@@ -992,10 +1014,13 @@ var _ = Describe("BoostController", func() {
 							},
 						},
 					}
+					// Initialize event recorder
+					recorder = newTestEventRecorder()
+					boostCtrl.Recorder = recorder
 					// Set expired activation
 					annotation := bpod.NewBoostAnnotation()
 					duration := int64(300) // 5 minutes
-					annotation.SetCurrentActivation(autoscaling.BoostTriggerTypePodCreate, time.Now().Add(-10*time.Minute), "FixedDuration", &duration, nil)
+					annotation.SetCurrentActivation(autoscaling.BoostTriggerTypePodConditionTransition, time.Now().Add(-10*time.Minute), "FixedDuration", &duration, nil)
 					testPod.Annotations[bpod.BoostAnnotationKey] = annotation.ToJSON()
 					mockClient.EXPECT().Get(gomock.Any(), gomock.Eq(req.NamespacedName), gomock.Any()).
 						DoAndReturn(func(c context.Context, cc client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
@@ -1017,9 +1042,20 @@ var _ = Describe("BoostController", func() {
 					mockBoost.EXPECT().ShouldActivateForPodConditionTransition(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
 					mockBoost.EXPECT().ApplyBoostAtRuntime(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
 				})
-				It("should clear expired activation", func() {
+				It("should clear expired activation and emit BoostExpired event", func() {
 					Expect(err).To(BeNil())
 					Expect(result).To(Equal(ctrl.Result{}))
+					// Verify expiration event was emitted
+					Expect(recorder.Count()).To(Equal(1))
+					events := recorder.GetEvents()
+					Expect(events[0].reason).To(Equal("BoostExpired"))
+					Expect(events[0].eventtype).To(Equal("Normal"))
+					Expect(events[0].message).To(ContainSubstring("expired"))
+					Expect(events[0].message).To(ContainSubstring(name))                     // boost name
+					Expect(events[0].message).To(ContainSubstring("test-pod"))               // pod name
+					Expect(events[0].message).To(ContainSubstring("PodConditionTransition")) // trigger type
+					Expect(events[0].message).To(ContainSubstring("FixedDuration"))          // duration policy type
+					Expect(events[0].message).To(ContainSubstring("Total boost duration"))   // duration
 				})
 			})
 			When("List fails", func() {
