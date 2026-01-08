@@ -88,11 +88,33 @@ jobs:
       - name: Connect registry to kind network
         run: |
           docker network connect kind kube-startup-cpu-boost-registry 2>/dev/null || true
+          # Get registry IP for verification
+          REGISTRY_IP=$(docker inspect kube-startup-cpu-boost-registry --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' | head -1)
+          echo "Registry IP on kind network: $REGISTRY_IP"
           kubectl get nodes
           kubectl get pods -A || true
 
       - name: Configure containerd registry mirror
         run: python3 scripts/configure_containerd_registry.py
+
+      - name: Verify registry accessibility from Kind nodes
+        run: |
+          # Get registry IP
+          REGISTRY_IP=$(docker inspect kube-startup-cpu-boost-registry --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' | head -1)
+          echo "Verifying registry accessibility from Kind nodes..."
+          echo "Registry IP: $REGISTRY_IP"
+          
+          # Test registry access from a Kind node
+          NODE_NAME=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')
+          echo "Testing from node: $NODE_NAME"
+          
+          # Test if registry is reachable
+          docker exec $NODE_NAME sh -c "nc -zv $REGISTRY_IP 5000" || echo "Warning: Could not connect to registry from node"
+          
+          # Test registry API
+          docker exec $NODE_NAME sh -c "curl -s http://$REGISTRY_IP:5000/v2/" || echo "Warning: Could not access registry API"
+          
+          echo "✅ Registry verification complete"
 
       - name: Verify cluster
         run: |
@@ -131,10 +153,20 @@ jobs:
           echo "Tilt will:"
           echo "  1. Build Go binary for detected architecture"
           echo "  2. Build Docker image"
-          echo "  3. Deploy via Helm chart"
-          echo "  4. Wait for all resources to be ready"
+          echo "  3. Push image to localhost:5000 registry"
+          echo "  4. Deploy via Helm chart"
+          echo "  5. Wait for all resources to be ready"
+          
+          # Verify registry is accessible before starting Tilt
+          echo "Verifying registry is accessible..."
+          curl -s http://localhost:5000/v2/ || (echo "ERROR: Registry not accessible" && exit 1)
+          
           # Tilt CI runs in non-interactive mode and waits for resources to be ready
           tilt ci --timeout 10m
+          
+          # Verify image was pushed after Tilt CI
+          echo "Verifying image was pushed to registry..."
+          curl -s http://localhost:5000/v2/kube-startup-cpu-boost/tags/list || echo "Warning: Could not verify image tags"
         timeout-minutes: 12
 
       - name: Check deployment status
