@@ -49,13 +49,24 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3 python3-pip docker.io kubectl curl
+          sudo apt-get install -y python3 python3-pip curl
+          
+          # Install kubectl (if not already available)
+          if ! command -v kubectl &> /dev/null; then
+            curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+            chmod +x kubectl
+            sudo mv kubectl /usr/local/bin/
+          fi
           
           # Install kind (not available in apt repositories)
           curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
           kind version
+          
+          # Verify Docker is available (pre-installed on GitHub Actions runners)
+          docker --version
+          kubectl version --client
 
       - name: Start local registry for Kind (localhost:5000)
         run: |
