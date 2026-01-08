@@ -241,6 +241,13 @@ func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForContainerRestart(ctx co
 		// Check if current activation has expired and clear it if so (idempotent behavior)
 		if annotation.IsActivationExpired(pod) {
 			log.V(5).Info("boost activation expired, clearing active state", "pod", pod.Name)
+			// Get activation details before clearing for event emission
+			currentActivation := annotation.GetCurrentActivation()
+			if currentActivation != nil && r.Recorder != nil {
+				// Emit expiration event before clearing
+				eventMessage := r.formatExpirationEventMessage(pod, boost, currentActivation)
+				r.Recorder.Event(pod, corev1.EventTypeNormal, "BoostExpired", eventMessage)
+			}
 			annotation.ClearCurrentActivation()
 			// Update pod annotation to persist the cleared state
 			labelsPatch := bpod.NewApplyBoostLabelsPatch(annotation, boost.Name())
@@ -330,6 +337,13 @@ func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForPodConditionTransition(
 		// Check if current activation has expired and clear it if so (idempotent behavior)
 		if annotation.IsActivationExpired(pod) {
 			log.V(5).Info("boost activation expired, clearing active state", "pod", pod.Name)
+			// Get activation details before clearing for event emission
+			currentActivation := annotation.GetCurrentActivation()
+			if currentActivation != nil && r.Recorder != nil {
+				// Emit expiration event before clearing
+				eventMessage := r.formatExpirationEventMessage(pod, boost, currentActivation)
+				r.Recorder.Event(pod, corev1.EventTypeNormal, "BoostExpired", eventMessage)
+			}
 			annotation.ClearCurrentActivation()
 			// Update pod annotation to persist the cleared state
 			labelsPatch := bpod.NewApplyBoostLabelsPatch(annotation, boost.Name())
@@ -469,6 +483,47 @@ func (r *StartupCPUBoostReconciler) formatIdempotencySkipEventMessage(pod *corev
 
 	// Add timestamp
 	message += fmt.Sprintf(". Timestamp: %s", now.Format(time.RFC3339))
+
+	return message
+}
+
+// formatExpirationEventMessage formats an event message for boost expiration
+// Includes boost name, pod name, trigger type, duration policy type, and total boost duration
+func (r *StartupCPUBoostReconciler) formatExpirationEventMessage(pod *corev1.Pod, boost boost.StartupCPUBoost, activation *bpod.ActivationStateEntry) string {
+	now := time.Now()
+	boostName := boost.Name()
+	podName := pod.Name
+
+	// Build message
+	message := fmt.Sprintf("CPU boost '%s' expired for pod '%s'", boostName, podName)
+	message += fmt.Sprintf(" (trigger: %s)", activation.TriggerType)
+
+	// Calculate total boost duration from start time
+	startTime, err := time.Parse(time.RFC3339, activation.StartTime)
+	if err == nil {
+		duration := now.Sub(startTime)
+		message += fmt.Sprintf(". Total boost duration: %v", duration.Round(time.Second))
+	}
+
+	// Add duration policy type and details
+	message += fmt.Sprintf(". Duration policy type: %s", activation.ExpiryConditionType)
+	switch activation.ExpiryConditionType {
+	case "FixedDuration":
+		if activation.ExpiryFixedDuration != nil {
+			policyDuration := time.Duration(*activation.ExpiryFixedDuration) * time.Second
+			message += fmt.Sprintf(" (%v)", policyDuration.Round(time.Second))
+		}
+	case "PodCondition":
+		if activation.ExpiryPodCondition != nil {
+			message += fmt.Sprintf(" (condition: %s=%s)", activation.ExpiryPodCondition.Type, activation.ExpiryPodCondition.Status)
+		}
+	}
+
+	// Add timestamps
+	if err == nil {
+		message += fmt.Sprintf(". Activation started: %s", startTime.Format(time.RFC3339))
+	}
+	message += fmt.Sprintf(". Expired at: %s", now.Format(time.RFC3339))
 
 	return message
 }
