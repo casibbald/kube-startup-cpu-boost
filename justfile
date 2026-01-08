@@ -206,3 +206,33 @@ port-forward-metrics:
 port-forward-health:
     @echo "🔌 Port forwarding to Controller Manager health probe (8081)..."
     @kubectl port-forward -n kube-startup-cpu-boost-system svc/kube-startup-cpu-boost-controller-manager-metrics 8081:8081
+
+# ============================================================================
+# Documentation
+# ============================================================================
+
+# Check markdown links in a specific file
+check-links file:
+    #!/usr/bin/env bash
+    set -e
+    if ! command -v markdown-link-check &> /dev/null; then
+        echo "⚠️  markdown-link-check not found. Installing..."
+        npm install -g markdown-link-check
+    fi
+    echo "🔍 Checking links in {{file}}..."
+    markdown-link-check {{file}} --config .mlc_config.json
+
+# Check markdown links in all markdown files (excluding docs/)
+check-links-all:
+    #!/usr/bin/env bash
+    set -e
+    if ! command -v markdown-link-check &> /dev/null; then
+        echo "⚠️  markdown-link-check not found. Installing..."
+        npm install -g markdown-link-check
+    fi
+    echo "🔍 Checking links in all markdown files..."
+    find . -name "*.md" -not -path "./docs/*" -not -path "./.git/*" -not -path "./node_modules/*" | while read -r file; do
+        echo ""
+        echo "Checking: $file"
+        markdown-link-check "$file" --config .mlc_config.json || true
+    done
