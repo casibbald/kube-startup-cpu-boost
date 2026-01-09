@@ -32,14 +32,9 @@
 allow_k8s_contexts(['kind-kube-startup-cpu-boost'])
 
 # Configure default registry for Kind cluster
-# Explicitly set registry to avoid auto-detection from ConfigMap
-# The registry is set up by scripts/setup_kind.py as 'kind-registry' on localhost:5001
-# host_from_cluster uses the container name 'kind-registry:5001' which Docker DNS resolves
-# Note: Both host and container use port 5001 to avoid conflict with macOS AirPlay Receiver (port 5000)
-default_registry(
-    'localhost:5001',           # Registry host as seen from local machine (port 5001)
-    host_from_cluster='kind-registry:5001'  # Registry host as seen from within Kind cluster (container port 5001)
-)
+# Containerd mirrors localhost:5001 to kind-registry:5000 automatically
+# We use localhost:5001 everywhere - containerd handles the translation
+default_registry('localhost:5001')
 
 # Suppress warning for custom_build image that uses full registry path
 # We use custom_build with explicit registry path, so Tilt won't find the image name in manifests
@@ -115,15 +110,13 @@ local_resource(
 BINARY_PATH = 'bin/manager'
 IMAGE_NAME = 'kube-startup-cpu-boost'
 # Registry as seen from host (for docker push)
+# Containerd will mirror localhost:5001 to kind-registry:5000 automatically
 REGISTRY_HOST = 'localhost:5001'
-# Registry as seen from inside Kind cluster (for Kubernetes image pull)
-REGISTRY_CLUSTER = 'kind-registry:5001'
-FULL_IMAGE_NAME_HOST = '%s/%s' % (REGISTRY_HOST, IMAGE_NAME)
-FULL_IMAGE_NAME_CLUSTER = '%s/%s' % (REGISTRY_CLUSTER, IMAGE_NAME)
+FULL_IMAGE_NAME = '%s/%s' % (REGISTRY_HOST, IMAGE_NAME)
 # Use unique tag per build to prevent Kubernetes from using cached images
 # Git hash ensures each build has a unique image tag
 IMAGE_TAG = 'tilt-' + str(local('git rev-parse --short HEAD 2>/dev/null || echo unknown')).strip()
-IMAGE_REF = '%s:%s' % (FULL_IMAGE_NAME_HOST, IMAGE_TAG)
+IMAGE_REF = '%s:%s' % (FULL_IMAGE_NAME, IMAGE_TAG)
 
 # Build and push Docker image using local_resource
 # This explicitly builds and pushes the image, ensuring it's available before deployment
@@ -207,7 +200,7 @@ custom_build(
 # which matches the kustomize-to-helm conversion that helmify performs.
 # The chart structure is compatible with both helmify generation and manual helm template usage.
 k8s_yaml(
-    local('helm template kube-startup-cpu-boost %s/charts/kube-startup-cpu-boost --namespace kube-startup-cpu-boost-system --set controllerManager.manager.image.repository=%s --set controllerManager.manager.image.tag=%s' % (PROJECT_DIR, FULL_IMAGE_NAME_CLUSTER, IMAGE_TAG))
+    local('helm template kube-startup-cpu-boost %s/charts/kube-startup-cpu-boost --namespace kube-startup-cpu-boost-system --set controllerManager.manager.image.repository=%s --set controllerManager.manager.image.tag=%s' % (PROJECT_DIR, FULL_IMAGE_NAME, IMAGE_TAG))
 )
 
 # Configure controller manager resource
@@ -256,11 +249,10 @@ local_resource(
 # Build Docker image for the demo Java app
 # Uses the Dockerfile in demo-app directory
 DEMO_APP_IMAGE_NAME = 'spring-demo-app'
-DEMO_APP_FULL_IMAGE_NAME_HOST = '%s/%s' % (REGISTRY_HOST, DEMO_APP_IMAGE_NAME)
-DEMO_APP_FULL_IMAGE_NAME_CLUSTER = '%s/%s' % (REGISTRY_CLUSTER, DEMO_APP_IMAGE_NAME)
+DEMO_APP_FULL_IMAGE_NAME = '%s/%s' % (REGISTRY_HOST, DEMO_APP_IMAGE_NAME)
 # Use unique tag per build
 DEMO_APP_IMAGE_TAG = 'tilt-' + str(local('git rev-parse --short HEAD 2>/dev/null || echo unknown')).strip()
-DEMO_APP_IMAGE_REF = '%s:%s' % (DEMO_APP_FULL_IMAGE_NAME_HOST, DEMO_APP_IMAGE_TAG)
+DEMO_APP_IMAGE_REF = '%s:%s' % (DEMO_APP_FULL_IMAGE_NAME, DEMO_APP_IMAGE_TAG)
 
 # Build and push Docker image for demo app
 local_resource(
@@ -287,7 +279,7 @@ local_resource(
 # Note: We don't add resource_deps here because custom_build doesn't support it
 # Instead, the k8s_resource for spring-demo-app has resource_deps that includes docker-build-demo-app
 custom_build(
-    DEMO_APP_FULL_IMAGE_NAME_HOST,
+    DEMO_APP_FULL_IMAGE_NAME,
     'docker tag %s $EXPECTED_REF && docker push $EXPECTED_REF' % DEMO_APP_IMAGE_REF,
     deps=[],  # No file deps - image is already built by docker-build-demo-app
     tag=DEMO_APP_IMAGE_TAG,
@@ -315,7 +307,7 @@ custom_build(
 # deployment waits for docker-build-demo-app, even if YAML is generated early
 # The image tag is computed at Tiltfile load time, so it will be consistent
 k8s_yaml(
-    local('kubectl kustomize %s/demo-app | python3 -c \'import sys, yaml; docs = list(yaml.safe_load_all(sys.stdin)); filtered = [d for d in docs if d.get("kind") != "StartupCPUBoost"]; print(yaml.dump_all(filtered, default_flow_style=False))\' | sed "s|ghcr.io/google/spring-demo-app:latest|%s:%s|g"' % (PROJECT_DIR, DEMO_APP_FULL_IMAGE_NAME_CLUSTER, DEMO_APP_IMAGE_TAG)),
+    local('kubectl kustomize %s/demo-app | python3 -c \'import sys, yaml; docs = list(yaml.safe_load_all(sys.stdin)); filtered = [d for d in docs if d.get("kind") != "StartupCPUBoost"]; print(yaml.dump_all(filtered, default_flow_style=False))\' | sed "s|ghcr.io/google/spring-demo-app:latest|%s:%s|g"' % (PROJECT_DIR, DEMO_APP_FULL_IMAGE_NAME, DEMO_APP_IMAGE_TAG)),
 )
 
 # Wait for webhook service to be ready

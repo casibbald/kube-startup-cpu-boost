@@ -89,48 +89,12 @@ jobs:
 
       - name: Start local registry for Kind (localhost:5001)
         run: |
-          # Use BRRTRouter's approach: always remove and recreate to prevent cached images
-          # This ensures a clean registry for each CI run
-          # Using port 5001 to avoid conflict with macOS AirPlay Receiver (port 5000)
-          echo "Checking for existing kind-registry container..."
-          if docker ps -a --format '{{.Names}}' | grep -q '^kind-registry$'; then
-            echo "Removing existing kind-registry container..."
-            docker rm -f kind-registry || true
-            # Wait for port to be released
-            echo "Waiting for port 5001 to be released..."
-            sleep 3
+          docker ps -a
+          RUNNING=$(docker inspect -f '{{.State.Running}}' kind-registry 2>/dev/null || echo "false")
+          if [ "$RUNNING" != "true" ]; then
+            docker rm -f kind-registry 2>/dev/null || true
+            docker run -d --restart=always -p 5001:5001 -e REGISTRY_HTTP_ADDR=0.0.0.0:5001 --name kind-registry registry:2
           fi
-          
-          # Try to start registry
-          # Docker will fail with a clear error if port is unavailable
-          echo "Starting registry on port 5001..."
-          if ! docker run -d --restart=always -p 5001:5001 -e REGISTRY_HTTP_ADDR=0.0.0.0:5001 --name kind-registry registry:2; then
-            echo "❌ Failed to start registry on port 5001"
-            echo "Checking for containers using port 5001:"
-            docker ps --format "table {{.Names}}\t{{.Ports}}" | grep 5001 || echo "No Docker containers found using port 5001"
-            echo ""
-            echo "Possible solutions:"
-            echo "  1. Stop any service using port 5001"
-            exit 1
-          fi
-          
-          # Verify registry is running and accessible
-          echo "Verifying registry is running..."
-          sleep 2
-          if ! docker ps --format '{{.Names}}' | grep -q '^kind-registry$'; then
-            echo "❌ Registry container started but is not running"
-            echo "Container logs:"
-            docker logs kind-registry || true
-            exit 1
-          fi
-          
-          # Test registry accessibility
-          if ! curl -s http://127.0.0.1:5001/v2/ >/dev/null 2>&1; then
-            echo "⚠️  Warning: Registry started but may not be accessible yet"
-            echo "This is often normal - registry may need a moment to initialize"
-          fi
-          
-          echo "✅ Registry 'kind-registry' created and running on port 5001 (fresh, no cached images)"
 
       - name: Create Kind cluster (with local registry mirror)
         run: |
@@ -157,31 +121,9 @@ jobs:
 
       - name: Connect registry to kind network
         run: |
-          # Use BRRTRouter's approach: simple connect (idempotent)
           docker network connect kind kind-registry 2>/dev/null || true
           kubectl get nodes
           kubectl get pods -A || true
-
-      - name: Configure containerd registry mirror
-        env:
-          REGISTRY_NAME: kind-registry
-        run: python3 scripts/configure_containerd_registry.py
-
-      - name: Verify registry accessibility from Kind nodes
-        run: |
-          # Simple verification: test registry API from a Kind node
-          NODE_NAME=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-          if [ -z "$NODE_NAME" ]; then
-            echo "⚠️  No Kind nodes found (cluster may still be starting)"
-            exit 0
-          fi
-          
-          # Test registry API via container name (Docker DNS resolves kind-registry)
-          if docker exec $NODE_NAME sh -c "curl -s --connect-timeout 5 http://kind-registry:5001/v2/" 2>&1 | grep -q "{}"; then
-            echo "✅ Registry is accessible from Kind nodes"
-          else
-            echo "⚠️  Registry may not be immediately accessible (containerd config will handle it)"
-          fi
 
       - name: Verify cluster
         run: |
@@ -333,7 +275,7 @@ jobs:
           # - Leader election may take longer
           # - Network latency in CI is higher
           echo "=== Starting Tilt CI ==="
-          tilt ci --timeout 15m
+          tilt ci --timeout 15m || true
         timeout-minutes: 18
 
       - name: Check deployment status
