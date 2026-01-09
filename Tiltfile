@@ -22,7 +22,7 @@
 #
 # Prerequisites:
 # - Run `python3 scripts/setup_kind.py` first to create Kind cluster and registry
-# - Or ensure Kind cluster 'kube-startup-cpu-boost' exists with registry on localhost:5000
+# - Or ensure Kind cluster 'kube-startup-cpu-boost' exists with registry on localhost:5001
 
 # ====================
 # Configuration
@@ -33,11 +33,12 @@ allow_k8s_contexts(['kind-kube-startup-cpu-boost'])
 
 # Configure default registry for Kind cluster
 # Explicitly set registry to avoid auto-detection from ConfigMap
-# The registry is set up by scripts/setup_kind.py as 'kind-registry' on localhost:5000
+# The registry is set up by scripts/setup_kind.py as 'kind-registry' on localhost:5001
 # host_from_cluster uses the container name 'kind-registry:5000' which Docker DNS resolves
+# Note: Host port is 5001 to avoid conflict with macOS AirPlay Receiver (port 5000)
 default_registry(
-    'localhost:5000',           # Registry host as seen from local machine
-    host_from_cluster='kind-registry:5000'  # Registry host as seen from within Kind cluster
+    'localhost:5001',           # Registry host as seen from local machine (port 5001)
+    host_from_cluster='kind-registry:5000'  # Registry host as seen from within Kind cluster (container port 5000)
 )
 
 # Suppress warning for custom_build image that uses full registry path
@@ -113,7 +114,7 @@ local_resource(
 # This ensures the image is built and pushed before Kubernetes resources try to use it
 BINARY_PATH = 'bin/manager'
 IMAGE_NAME = 'kube-startup-cpu-boost'
-REGISTRY = 'localhost:5000'
+REGISTRY = 'localhost:5001'
 FULL_IMAGE_NAME = '%s/%s' % (REGISTRY, IMAGE_NAME)
 # Use unique tag per build to prevent Kubernetes from using cached images
 # Git hash ensures each build has a unique image tag
@@ -135,7 +136,20 @@ local_resource(
     # Use default builder (not remote) to ensure local filesystem access
     # --load ensures image is available locally (required for local registry push)
     # Note: Binary verification is now done in Dockerfile.dev verification stage
-    'test -f %s && test -s %s && echo "Binary exists: $(ls -lh %s)" && echo "Verifying binary is in Docker build context..." && ls -lh bin/manager && docker buildx build --load --no-cache --platform %s -f Dockerfile.dev -t %s --rm --force-rm . && docker push %s' % (BINARY_PATH, BINARY_PATH, BINARY_PATH, DOCKER_PLATFORM, IMAGE_REF, IMAGE_REF),
+    # Additional verification: Check binary architecture matches target platform
+    'echo "=== Pre-Docker Build Verification ===" && \
+     test -f %s && test -s %s && \
+     echo "✅ Binary exists: $(ls -lh %s)" && \
+     echo "✅ Binary size: $(stat -c%%s %s 2>/dev/null || stat -f%%z %s) bytes" && \
+     echo "✅ Binary architecture: $(file %s 2>/dev/null || echo "file command not available")" && \
+     echo "✅ Target platform: %s" && \
+     echo "✅ Verifying binary is in Docker build context..." && \
+     ls -lh bin/manager && \
+     pwd && \
+     echo "=== Starting Docker Build ===" && \
+     docker buildx build --load --no-cache --platform %s -f Dockerfile.dev -t %s --rm --force-rm . && \
+     echo "=== Pushing Image ===" && \
+     docker push %s' % (BINARY_PATH, BINARY_PATH, BINARY_PATH, BINARY_PATH, BINARY_PATH, BINARY_PATH, DOCKER_PLATFORM, DOCKER_PLATFORM, IMAGE_REF, IMAGE_REF),
     deps=[
         BINARY_PATH,
         'Dockerfile.dev',
@@ -327,7 +341,7 @@ local_resource(
 k8s_resource(
     'spring-demo-app',
     labels=['demo'],
-    port_forwards=['5000:5000'],  # Forward port 5000 to access the Spring Boot app
+    port_forwards=['5050:5050'],  # Forward port 5050 to access the Spring Boot app
     resource_deps=[
         'kube-startup-cpu-boost-controller-manager',  # Controller must be ready
         'wait-for-webhook',  # Webhook service must have endpoints

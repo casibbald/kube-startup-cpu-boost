@@ -365,6 +365,7 @@ func (b *StartupCPUBoostImpl) ApplyBoostAtRuntime(ctx context.Context, pod *core
 	currentActivation := annotation.GetCurrentActivation()
 	if currentActivation != nil {
 		log.V(5).Info("boost already active, skipping runtime application", "currentTrigger", currentActivation.TriggerType)
+		// Note: Skip metrics are updated in the controller, not here, to avoid duplicate increments
 		return false, nil
 	}
 

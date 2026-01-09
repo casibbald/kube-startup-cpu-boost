@@ -1530,6 +1530,9 @@ var _ = Describe("BoostController", func() {
 					// Error is logged but doesn't fail reconciliation
 					Expect(err).To(BeNil())
 					Expect(result).To(Equal(ctrl.Result{}))
+					// Note: When ApplyBoostAtRuntime returns an error, metrics are NOT updated
+					// because the code does `continue` before reaching the metrics update code.
+					// This ensures metrics only reflect successful activations.
 				})
 			})
 			When("ApplyBoostAtRuntime returns false (boost already active)", func() {

@@ -31,7 +31,7 @@ from pathlib import Path
 # Configuration
 CLUSTER_NAME = "kube-startup-cpu-boost"
 REGISTRY_NAME = "kind-registry"
-REGISTRY_PORT = "5000"
+REGISTRY_PORT = "5001"  # Use 5001 to avoid conflict with macOS AirPlay Receiver (port 5000)
 
 
 def log_info(msg):
@@ -104,7 +104,7 @@ def find_registry_on_port(port):
 def setup_registry():
     """Setup local Docker registry.
     
-    Checks if a registry is already running on port 5000 and uses it if found.
+    Checks if a registry is already running on port 5001 and uses it if found.
     Otherwise creates a new registry container.
     
     Returns the name of the registry container to use.
@@ -126,7 +126,7 @@ def setup_registry():
             run_command(f"docker start {REGISTRY_NAME}", check=False)
             return REGISTRY_NAME
     
-    # Check if any registry is already running on port 5000
+    # Check if any registry is already running on port 5001
     existing_registry = find_registry_on_port(REGISTRY_PORT)
     if existing_registry:
         log_info(f"Found existing registry '{existing_registry}' running on port {REGISTRY_PORT}")
@@ -138,6 +138,7 @@ def setup_registry():
     # No registry found, create a new one
     log_info("Creating local Docker registry...")
     # Bind to 127.0.0.1 only to avoid conflicts with macOS Control Center on port 5000
+    # Using port 5001 on host, container uses port 5000 (registry default)
     # Use a named volume for persistent storage (survives container restarts)
     # This prevents losing images when the registry container is recreated
     volume_name = f"{REGISTRY_NAME}-data"
@@ -221,8 +222,9 @@ def configure_containerd_registry():
     
     # Containerd config patch to add registry mirror
     # Use IP address for reliable connectivity (avoids DNS resolution issues)
+    # Note: Host uses port 5001, container uses port 5000
     containerd_patch = f"""
-[plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5000"]
+[plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5001"]
   endpoint = ["{registry_endpoint}"]
 """
     
@@ -244,12 +246,14 @@ def configure_containerd_registry():
             log_info(f"Registry mirror already configured correctly on {node}")
             continue
         
-        # Remove existing localhost:5000 mirror config if present (to avoid duplicates)
+        # Remove existing localhost:5001 mirror config if present (to avoid duplicates)
+        # Also check for old localhost:5000 config and remove it
         lines = config_content.split('\n')
         new_lines = []
         skip_until_end = False
         for i, line in enumerate(lines):
-            if '[plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5000"]' in line:
+            if '[plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5001"]' in line or \
+               '[plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5000"]' in line:
                 # Skip this section
                 skip_until_end = True
                 continue

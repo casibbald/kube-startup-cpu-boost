@@ -139,7 +139,7 @@ metadata:
   namespace: demo
 spec:
   ports:
-  - port: 5000
+  - port: 5050
     targetPort: http
   selector:
     app.kubernetes.io/name: spring-demo-app
@@ -273,7 +273,7 @@ spec:
             scheme: HTTP
         name: spring-demo-app
         ports:
-        - containerPort: 5000
+        - containerPort: 5050
           name: http
         resources:
           limits:

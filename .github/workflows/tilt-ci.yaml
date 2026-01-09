@@ -77,13 +77,50 @@ jobs:
           # Verify Helm is installed
           helm version
 
-      - name: Start local registry for Kind (localhost:5000)
+      - name: Start local registry for Kind (localhost:5001)
         run: |
           # Use BRRTRouter's approach: always remove and recreate to prevent cached images
           # This ensures a clean registry for each CI run
-          docker rm -f kind-registry 2>/dev/null || true
-          docker run -d --restart=always -p 5000:5000 --name kind-registry registry:2
-          echo "✅ Registry 'kind-registry' created (fresh, no cached images)"
+          # Using port 5001 to avoid conflict with macOS AirPlay Receiver (port 5000)
+          echo "Checking for existing kind-registry container..."
+          if docker ps -a --format '{{.Names}}' | grep -q '^kind-registry$'; then
+            echo "Removing existing kind-registry container..."
+            docker rm -f kind-registry || true
+            # Wait for port to be released
+            echo "Waiting for port 5001 to be released..."
+            sleep 3
+          fi
+          
+          # Try to start registry
+          # Docker will fail with a clear error if port is unavailable
+          echo "Starting registry on port 5001..."
+          if ! docker run -d --restart=always -p 5001:5000 --name kind-registry registry:2; then
+            echo "❌ Failed to start registry on port 5001"
+            echo "Checking for containers using port 5001:"
+            docker ps --format "table {{.Names}}\t{{.Ports}}" | grep 5001 || echo "No Docker containers found using port 5001"
+            echo ""
+            echo "Possible solutions:"
+            echo "  1. Stop any service using port 5001"
+            exit 1
+          fi
+          
+          # Verify registry is running and accessible
+          echo "Verifying registry is running..."
+          sleep 2
+          if ! docker ps --format '{{.Names}}' | grep -q '^kind-registry$'; then
+            echo "❌ Registry container started but is not running"
+            echo "Container logs:"
+            docker logs kind-registry || true
+            exit 1
+          fi
+          
+          # Test registry accessibility
+          if ! curl -s http://127.0.0.1:5001/v2/ >/dev/null 2>&1; then
+            echo "⚠️  Warning: Registry started but may not be accessible yet"
+            echo "This is often normal - registry may need a moment to initialize"
+          fi
+          
+          echo "✅ Registry 'kind-registry' created and running on port 5001 (fresh, no cached images)"
 
       - name: Create Kind cluster (with local registry mirror)
         run: |
@@ -194,7 +231,7 @@ jobs:
             namespace: kube-public
           data:
             localRegistryHosting.v1: |
-              host: "localhost:5000"
+              host: "localhost:5001"
               hostFromClusterNetwork: "kind-registry:5000"
               help: "https://kind.sigs.k8s.io/docs/user/local-registry/"
           EOF
@@ -203,6 +240,22 @@ jobs:
         run: |
           curl -fsSL https://raw.githubusercontent.com/tilt-dev/tilt/master/scripts/install.sh | bash
           tilt version
+
+      - name: Install Python dependencies
+        run: |
+          # Install PyYAML required by Tiltfile for YAML processing
+          # Use apt instead of pip to avoid externally-managed-environment error
+          sudo apt-get update -qq
+          sudo apt-get install -y python3-yaml
+          # Verify installation
+          python3 -c "import yaml; print('✅ PyYAML installed successfully')"
+
+      - name: Install Java and Maven
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y default-jdk maven
+          java -version
+          mvn --version
 
       - name: Get dependencies
         run: go mod download
@@ -226,15 +279,22 @@ jobs:
           echo "Tilt will:"
           echo "  1. Build Go binary for detected architecture"
           echo "  2. Build Docker image"
-          echo "  3. Push image to localhost:5000 registry"
+          echo "  3. Push image to localhost:5001 registry"
           echo "  4. Deploy via Helm chart"
           echo "  5. Wait for all resources to be ready"
           echo ""
           echo "Note: Optimized for slower CI environments with extended timeouts"
           
+          # Pre-flight checks
+          echo "=== Pre-Flight Checks ==="
+          echo "Current directory: $(pwd)"
+          echo "Go version: $(go version)"
+          echo "Docker version: $(docker --version)"
+          echo "Kind cluster architecture: $(python3 scripts/detect_kind_architecture.py || echo 'detection failed')"
+          
           # Verify registry is accessible before starting Tilt
           echo "Verifying registry is accessible..."
-          curl -s http://127.0.0.1:5000/v2/ || (echo "ERROR: Registry not accessible" && exit 1)
+          curl -s http://127.0.0.1:5001/v2/ || (echo "ERROR: Registry not accessible" && exit 1)
           
           # Wait a bit for cluster to be fully ready before starting Tilt
           # This helps ensure all cluster components are ready
@@ -254,6 +314,7 @@ jobs:
           # - Webhook certificate generation needs time
           # - Leader election may take longer
           # - Network latency in CI is higher
+          echo "=== Starting Tilt CI ==="
           tilt ci --timeout 15m
         timeout-minutes: 18
 

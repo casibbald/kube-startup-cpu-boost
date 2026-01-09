@@ -24,6 +24,7 @@ import (
 	autoscaling "github.com/google/kube-startup-cpu-boost/api/v1alpha1"
 	"github.com/google/kube-startup-cpu-boost/internal/boost"
 	bpod "github.com/google/kube-startup-cpu-boost/internal/boost/pod"
+	"github.com/google/kube-startup-cpu-boost/internal/metrics"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -147,6 +148,9 @@ func (h *podCPUBoostHandler) boostContainerResources(ctx context.Context, b boos
 			pod.Labels = make(map[string]string)
 		}
 		pod.Labels[bpod.BoostLabelKey] = b.Name()
+		// Update metrics for PodCreate boost activation
+		metrics.IncrementBoostActivations(string(triggerType), b.Name(), pod.Namespace)
+		metrics.SetBoostActive(b.Name(), pod.Namespace, 1)
 	}
 }
 

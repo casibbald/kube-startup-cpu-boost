@@ -36,6 +36,7 @@ import (
 	autoscaling "github.com/google/kube-startup-cpu-boost/api/v1alpha1"
 	"github.com/google/kube-startup-cpu-boost/internal/boost"
 	bpod "github.com/google/kube-startup-cpu-boost/internal/boost/pod"
+	"github.com/google/kube-startup-cpu-boost/internal/metrics"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -480,6 +481,8 @@ func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForContainerRestart(ctx co
 				r.Recorder.Event(pod, corev1.EventTypeNormal, "BoostExpired", eventMessage)
 			}
 			annotation.ClearCurrentActivation()
+			// Update metrics: decrement active boost gauge when boost expires
+			metrics.SetBoostActive(boost.Name(), boost.Namespace(), 0)
 			// Update pod annotation to persist the cleared state
 			labelsPatch := bpod.NewApplyBoostLabelsPatch(annotation, boost.Name())
 			if err := r.Client.Patch(ctx, pod, labelsPatch); err != nil {
@@ -512,6 +515,8 @@ func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForContainerRestart(ctx co
 				// Emit event for skipped activation with detailed information
 				eventMessage := r.formatCooldownEventMessage(pod, boost, triggerType, cooldownPolicy, annotation, reason)
 				r.Recorder.Event(pod, corev1.EventTypeWarning, "BoostSkippedCooldown", eventMessage)
+				// Update metrics for skipped activation
+				metrics.IncrementBoostSkipped("cooldown", boost.Name(), boost.Namespace())
 				continue
 			}
 
@@ -526,11 +531,16 @@ func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForContainerRestart(ctx co
 				// Emit event for boost activation
 				eventMessage := fmt.Sprintf("CPU boost '%s' activated for pod '%s' via ContainerRestart trigger", boost.Name(), pod.Name)
 				r.Recorder.Event(pod, corev1.EventTypeNormal, "BoostActivated", eventMessage)
+				// Update metrics for successful activation
+				metrics.IncrementBoostActivations(string(triggerType), boost.Name(), boost.Namespace())
+				metrics.SetBoostActive(boost.Name(), boost.Namespace(), 1)
 			} else {
 				log.V(5).Info("boost not applied (likely already active)", "pod", pod.Name)
 				// Emit event for skipped activation due to idempotency (boost already active)
 				eventMessage := r.formatIdempotencySkipEventMessage(pod, boost, triggerType, annotation)
 				r.Recorder.Event(pod, corev1.EventTypeNormal, "BoostSkippedActive", eventMessage)
+				// Update metrics for skipped activation
+				metrics.IncrementBoostSkipped("idempotency", boost.Name(), boost.Namespace())
 			}
 		}
 	}
@@ -616,6 +626,8 @@ func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForPodConditionTransition(
 				// Emit event for skipped activation with detailed information
 				eventMessage := r.formatCooldownEventMessage(pod, boost, triggerType, cooldownPolicy, annotation, reason)
 				r.Recorder.Event(pod, corev1.EventTypeWarning, "BoostSkippedCooldown", eventMessage)
+				// Update metrics for skipped activation
+				metrics.IncrementBoostSkipped("cooldown", boost.Name(), boost.Namespace())
 				continue
 			}
 
@@ -630,11 +642,16 @@ func (r *StartupCPUBoostReconciler) applyRuntimeBoostsForPodConditionTransition(
 				// Emit event for boost activation
 				eventMessage := fmt.Sprintf("CPU boost '%s' activated for pod '%s' via PodConditionTransition trigger", boost.Name(), pod.Name)
 				r.Recorder.Event(pod, corev1.EventTypeNormal, "BoostActivated", eventMessage)
+				// Update metrics for successful activation
+				metrics.IncrementBoostActivations(string(triggerType), boost.Name(), boost.Namespace())
+				metrics.SetBoostActive(boost.Name(), boost.Namespace(), 1)
 			} else {
 				log.V(5).Info("boost not applied (likely already active)", "pod", pod.Name)
 				// Emit event for skipped activation due to idempotency (boost already active)
 				eventMessage := r.formatIdempotencySkipEventMessage(pod, boost, triggerType, annotation)
 				r.Recorder.Event(pod, corev1.EventTypeNormal, "BoostSkippedActive", eventMessage)
+				// Update metrics for skipped activation
+				metrics.IncrementBoostSkipped("idempotency", boost.Name(), boost.Namespace())
 			}
 		}
 	}

@@ -33,6 +33,12 @@ var (
 	// boostContainersActive is a number of a containers which
 	// CPU resources and not yet reverted to their original values.
 	boostContainersActive *prometheus.GaugeVec
+	// boostActivationsTotal is a counter of boost activations by trigger type.
+	boostActivationsTotal *prometheus.CounterVec
+	// boostActive is a gauge of currently active boosts (not containers).
+	boostActive *prometheus.GaugeVec
+	// boostSkippedTotal is a counter of boost activations that were skipped.
+	boostSkippedTotal *prometheus.CounterVec
 )
 
 // init initializes all of the Kube Startup CPU Boost metrics.
@@ -58,6 +64,37 @@ func init() {
 			Help:      "Number of a containers which CPU resources and not yet reverted to their original values",
 		}, []string{"namespace", "boost"},
 	)
+	// boostActivationsTotal tracks the total number of boost activations by trigger type.
+	// Labels: trigger (PodCreate, ContainerRestart, PodConditionTransition), boost (boost name), namespace.
+	// This metric follows Prometheus best practices for counter metrics.
+	boostActivationsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: KubeStartupCPUBoostSubsystem,
+			Name:      "activations_total",
+			Help:      "Total number of boost activations by trigger type",
+		}, []string{"trigger", "boost", "namespace"},
+	)
+	// boostActive tracks the number of currently active boosts (not containers).
+	// Labels: boost (boost name), namespace.
+	// Value 1 indicates boost is active, 0 indicates inactive.
+	// This metric follows Prometheus best practices for gauge metrics.
+	boostActive = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Subsystem: KubeStartupCPUBoostSubsystem,
+			Name:      "active",
+			Help:      "Number of currently active boosts",
+		}, []string{"boost", "namespace"},
+	)
+	// boostSkippedTotal tracks the total number of boost activations that were skipped.
+	// Labels: reason (cooldown, idempotency), boost (boost name), namespace.
+	// This metric follows Prometheus best practices for counter metrics.
+	boostSkippedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Subsystem: KubeStartupCPUBoostSubsystem,
+			Name:      "skipped_total",
+			Help:      "Total number of boost activations that were skipped",
+		}, []string{"reason", "boost", "namespace"},
+	)
 }
 
 // Register registers all of the Kube Startup CPU Boost metrics
@@ -67,6 +104,9 @@ func Register() {
 		boostConfigurations,
 		boostContainersTotal,
 		boostContainersActive,
+		boostActivationsTotal,
+		boostActive,
+		boostSkippedTotal,
 	)
 }
 
@@ -116,6 +156,11 @@ func ClearBoostMetrics(namespace string, boost string) {
 	boostContainersActive.Delete(
 		prometheus.Labels{"namespace": namespace, "boost": boost},
 	)
+	boostActive.Delete(
+		prometheus.Labels{"boost": boost, "namespace": namespace},
+	)
+	// Note: Counter metrics (boostActivationsTotal, boostSkippedTotal) are not deleted
+	// as they are cumulative and should persist across boost lifecycle
 }
 
 // BoostConfigurations returns value for a totalBoostConfigurations
@@ -141,6 +186,67 @@ func BoostContainersActive(namespace string, boost string) float64 {
 	return gaugeVecValue(boostContainersActive, prometheus.Labels{
 		"namespace": namespace,
 		"boost":     boost,
+	})
+}
+
+// IncrementBoostActivations increments the boost activations counter
+// for a given trigger type, boost name, and namespace.
+func IncrementBoostActivations(trigger string, boost string, namespace string) {
+	boostActivationsTotal.With(
+		prometheus.Labels{
+			"trigger":   trigger,
+			"boost":     boost,
+			"namespace": namespace,
+		}).Inc()
+}
+
+// SetBoostActive sets the active boost gauge for a given boost name and namespace.
+// Use value 1 to indicate boost is active, 0 to indicate inactive.
+func SetBoostActive(boost string, namespace string, value float64) {
+	boostActive.With(
+		prometheus.Labels{
+			"boost":     boost,
+			"namespace": namespace,
+		}).Set(value)
+}
+
+// IncrementBoostSkipped increments the boost skipped counter
+// for a given reason, boost name, and namespace.
+func IncrementBoostSkipped(reason string, boost string, namespace string) {
+	boostSkippedTotal.With(
+		prometheus.Labels{
+			"reason":    reason,
+			"boost":     boost,
+			"namespace": namespace,
+		}).Inc()
+}
+
+// BoostActivationsTotal returns value for boost activations counter
+// for a given trigger type, boost name, and namespace.
+func BoostActivationsTotal(trigger string, boost string, namespace string) float64 {
+	return counterVecValue(boostActivationsTotal, prometheus.Labels{
+		"trigger":   trigger,
+		"boost":     boost,
+		"namespace": namespace,
+	})
+}
+
+// BoostActive returns value for active boost gauge
+// for a given boost name and namespace.
+func BoostActive(boost string, namespace string) float64 {
+	return gaugeVecValue(boostActive, prometheus.Labels{
+		"boost":     boost,
+		"namespace": namespace,
+	})
+}
+
+// BoostSkippedTotal returns value for boost skipped counter
+// for a given reason, boost name, and namespace.
+func BoostSkippedTotal(reason string, boost string, namespace string) float64 {
+	return counterVecValue(boostSkippedTotal, prometheus.Labels{
+		"reason":    reason,
+		"boost":     boost,
+		"namespace": namespace,
 	})
 }
 

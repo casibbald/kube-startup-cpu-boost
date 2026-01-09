@@ -28,7 +28,10 @@ controllerManager:
       timeoutSeconds: 5
       failureThreshold: 3
     readinessProbe:
-      initialDelaySeconds: 10
+      # Increased initialDelaySeconds for CI environments where startup takes longer
+      # Controller startup sequence: cert generation (~60-80s in CI) + webhook setup + controller setup
+      # This prevents unnecessary probe failures during normal startup
+      initialDelaySeconds: 90
       periodSeconds: 10
       timeoutSeconds: 5
       failureThreshold: 3

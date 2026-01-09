@@ -33,7 +33,7 @@ java -jar target/spring-demo-app-0.0.1-SNAPSHOT.jar
   
    ```sh
    docker run -d  --name spring-demo-app \
-      -p 5000:5000 \
+      -p 5050:5050 \
       -v "`pwd`/application.yaml:/application.yaml" \
       ghcr.io/google/spring-demo-app:latest 
    ```
