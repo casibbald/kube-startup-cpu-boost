@@ -43,7 +43,7 @@ just dev-up
 This will:
 
 1. Create a Kind cluster named `kube-startup-cpu-boost`
-2. Setup a local Docker registry on `localhost:5000`
+2. Setup a local Docker registry on `localhost:5001`
 3. Configure the cluster to use the local registry
 4. Start Tilt to build and deploy the controller
 
@@ -202,7 +202,7 @@ tilt down
 ### Cluster Configuration
 
 - **Name**: `kube-startup-cpu-boost`
-- **Registry**: `kind-registry` on `localhost:5000`
+- **Registry**: `kind-registry` on `localhost:5001`
 - **Network**:
   - Pod Subnet: `10.206.0.0/16`
   - Service Subnet: `10.207.0.0/16`
@@ -212,7 +212,7 @@ tilt down
 
 The local registry:
 
-- Runs on `localhost:5000`
+- Runs on `localhost:5001`
 - Uses persistent storage (survives container restarts)
 - Automatically connected to the Kind network
 - Configured in containerd on all nodes
@@ -230,7 +230,7 @@ kubectl config use-context kind-kube-startup-cpu-boost
 docker ps | grep kind-registry
 
 # View registry contents (if needed)
-curl http://localhost:5000/v2/_catalog
+curl http://localhost:5001/v2/_catalog
 ```
 
 ## Building and Testing
@@ -242,10 +242,10 @@ curl http://localhost:5000/v2/_catalog
 make build
 
 # Build Docker image
-make docker-build IMG=localhost:5000/kube-startup-cpu-boost:dev
+make docker-build IMG=localhost:5001/kube-startup-cpu-boost:dev
 
 # Push to local registry
-docker push localhost:5000/kube-startup-cpu-boost:dev
+docker push localhost:5001/kube-startup-cpu-boost:dev
 ```
 
 ### Running Tests
@@ -286,7 +286,7 @@ The controller is deployed via Helm chart located at `charts/kube-startup-cpu-bo
 
 **Values overridden by Tilt:**
 
-- `controllerManager.manager.image.repository`: `localhost:5000/kube-startup-cpu-boost`
+- `controllerManager.manager.image.repository`: `localhost:5001/kube-startup-cpu-boost`
 - `controllerManager.manager.image.tag`: `tilt`
 
 **Namespace**: `kube-startup-cpu-boost-system`
@@ -297,12 +297,12 @@ If you want to deploy manually (without Tilt):
 
 ```bash
 # Build and push image first
-make docker-build IMG=localhost:5000/kube-startup-cpu-boost:dev
-docker push localhost:5000/kube-startup-cpu-boost:dev
+make docker-build IMG=localhost:5001/kube-startup-cpu-boost:dev
+docker push localhost:5001/kube-startup-cpu-boost:dev
 
 # Install via Helm
 helm install kube-startup-cpu-boost charts/kube-startup-cpu-boost \
-  --set controllerManager.manager.image.repository=localhost:5000/kube-startup-cpu-boost \
+  --set controllerManager.manager.image.repository=localhost:5001/kube-startup-cpu-boost \
   --set controllerManager.manager.image.tag=dev \
   -n kube-startup-cpu-boost-system --create-namespace
 ```
@@ -387,7 +387,7 @@ ls -la bin/manager
 make build
 
 # Then build Docker image
-make docker-build IMG=localhost:5000/kube-startup-cpu-boost:dev
+make docker-build IMG=localhost:5001/kube-startup-cpu-boost:dev
 ```
 
 **Helm template errors:**
@@ -398,7 +398,7 @@ helm template kube-startup-cpu-boost charts/kube-startup-cpu-boost
 
 # Check values
 helm template kube-startup-cpu-boost charts/kube-startup-cpu-boost \
-  --set controllerManager.manager.image.repository=localhost:5000/kube-startup-cpu-boost \
+  --set controllerManager.manager.image.repository=localhost:5001/kube-startup-cpu-boost \
   --set controllerManager.manager.image.tag=dev
 ```
 

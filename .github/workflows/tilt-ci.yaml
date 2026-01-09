@@ -104,7 +104,7 @@ jobs:
           # Try to start registry
           # Docker will fail with a clear error if port is unavailable
           echo "Starting registry on port 5001..."
-          if ! docker run -d --restart=always -p 5001:5000 --name kind-registry registry:2; then
+          if ! docker run -d --restart=always -p 5001:5001 --name kind-registry registry:2; then
             echo "❌ Failed to start registry on port 5001"
             echo "Checking for containers using port 5001:"
             docker ps --format "table {{.Names}}\t{{.Ports}}" | grep 5001 || echo "No Docker containers found using port 5001"
@@ -177,7 +177,7 @@ jobs:
           fi
           
           # Test registry API via container name (Docker DNS resolves kind-registry)
-          if docker exec $NODE_NAME sh -c "curl -s --connect-timeout 5 http://kind-registry:5000/v2/" 2>&1 | grep -q "{}"; then
+          if docker exec $NODE_NAME sh -c "curl -s --connect-timeout 5 http://kind-registry:5001/v2/" 2>&1 | grep -q "{}"; then
             echo "✅ Registry is accessible from Kind nodes"
           else
             echo "⚠️  Registry may not be immediately accessible (containerd config will handle it)"
@@ -242,7 +242,7 @@ jobs:
           data:
             localRegistryHosting.v1: |
               host: "localhost:5001"
-              hostFromClusterNetwork: "kind-registry:5000"
+              hostFromClusterNetwork: "kind-registry:5001"
               help: "https://kind.sigs.k8s.io/docs/user/local-registry/"
           EOF
 
