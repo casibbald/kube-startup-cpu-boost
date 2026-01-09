@@ -43,7 +43,7 @@ default_registry(
 
 # Suppress warning for custom_build image that uses full registry path
 # We use custom_build with explicit registry path, so Tilt won't find the image name in manifests
-update_settings(suppress_unused_image_warnings=["kube-startup-cpu-boost"])
+update_settings(suppress_unused_image_warnings=["kube-startup-cpu-boost", "localhost:5001/spring-demo-app"])
 
 # Get the directory where this Tiltfile is located
 PROJECT_DIR = '.'

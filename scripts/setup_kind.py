@@ -311,9 +311,19 @@ def configure_containerd_registry():
     # Containerd config patch to add registry mirror
     # Use IP address for reliable connectivity (avoids DNS resolution issues)
     # Note: Both host and container use port 5001
+    # Configure mirrors for both localhost:5001 and kind-registry:5001
+    # Mark registry as insecure (HTTP) to avoid HTTPS errors
     containerd_patch = f"""
 [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5001"]
   endpoint = ["{registry_endpoint}"]
+[plugins."io.containerd.grpc.v1.cri".registry.mirrors."{REGISTRY_NAME}:{REGISTRY_PORT}"]
+  endpoint = ["{registry_endpoint}"]
+[plugins."io.containerd.grpc.v1.cri".registry.configs."{REGISTRY_NAME}:{REGISTRY_PORT}"]
+  [plugins."io.containerd.grpc.v1.cri".registry.configs."{REGISTRY_NAME}:{REGISTRY_PORT}".tls]
+    insecure_skip_verify = true
+[plugins."io.containerd.grpc.v1.cri".registry.configs."localhost:5001"]
+  [plugins."io.containerd.grpc.v1.cri".registry.configs."localhost:5001".tls]
+    insecure_skip_verify = true
 """
     
     for node in nodes:
@@ -334,25 +344,46 @@ def configure_containerd_registry():
             log_info(f"Registry mirror already configured correctly on {node}")
             continue
         
-        # Remove existing localhost:5001 mirror config if present (to avoid duplicates)
-        # Also check for old localhost:5000 config and remove it
+        # Remove existing registry config if present (to avoid duplicates)
+        # Remove both mirrors and configs sections for localhost:5001, localhost:5000, and kind-registry:5001
         lines = config_content.split('\n')
         new_lines = []
         skip_until_end = False
+        skip_config_section = False
         for i, line in enumerate(lines):
-            if '[plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5001"]' in line or \
-               '[plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5000"]' in line:
+            # Check if we're starting a registry mirrors section to remove
+            if ('[plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5001"]' in line or
+                '[plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5000"]' in line or
+                f'[plugins."io.containerd.grpc.v1.cri".registry.mirrors."{REGISTRY_NAME}:5001"]' in line):
                 # Skip this section
                 skip_until_end = True
                 continue
+            # Check if we're starting a registry configs section to remove
+            if ('[plugins."io.containerd.grpc.v1.cri".registry.configs."localhost:5001"]' in line or
+                '[plugins."io.containerd.grpc.v1.cri".registry.configs."localhost:5000"]' in line or
+                f'[plugins."io.containerd.grpc.v1.cri".registry.configs."{REGISTRY_NAME}:5001"]' in line):
+                # Skip this config section
+                skip_config_section = True
+                continue
             if skip_until_end:
-                if line.strip().startswith('[') and 'registry.mirrors' in line:
+                if line.strip().startswith('[') and ('registry.mirrors' in line or 'registry.configs' in line):
                     # Next section started, stop skipping
                     skip_until_end = False
                     new_lines.append(line)
-                elif line.strip() and not line.strip().startswith('endpoint') and not line.strip().startswith('  '):
-                    # Non-indented line, stop skipping
+                elif line.strip() and not line.strip().startswith('endpoint') and not line.strip().startswith('  ') and not line.strip().startswith('insecure'):
+                    # Non-indented line that's not part of the section, stop skipping
                     skip_until_end = False
+                    new_lines.append(line)
+                # Otherwise continue skipping
+                continue
+            if skip_config_section:
+                if line.strip().startswith('['):
+                    # Next section started, stop skipping
+                    skip_config_section = False
+                    new_lines.append(line)
+                elif line.strip() and not (line.strip().startswith('[') or line.strip().startswith('insecure') or line.strip().startswith('  [')):
+                    # Non-indented line that's not part of the config section, stop skipping
+                    skip_config_section = False
                     new_lines.append(line)
                 # Otherwise continue skipping
                 continue

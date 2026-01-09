@@ -92,11 +92,19 @@ def configure_node_registry(node, registry_name):
     registry_endpoint = f"http://{registry_name}:5001"
     
     # Build TOML config lines
+    # Configure mirrors for both localhost:5001 and kind-registry:5001
+    # Mark registry as insecure (HTTP) to avoid HTTPS errors
     toml_lines = [
         '[plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5001"]',
         f'  endpoint = ["{registry_endpoint}"]',
         f'[plugins."io.containerd.grpc.v1.cri".registry.mirrors."{registry_name}:5001"]',
         f'  endpoint = ["{registry_endpoint}"]',
+        f'[plugins."io.containerd.grpc.v1.cri".registry.configs."{registry_name}:5001"]',
+        '  [plugins."io.containerd.grpc.v1.cri".registry.configs."' + f'{registry_name}:5001".tls]',
+        '    insecure_skip_verify = true',
+        '[plugins."io.containerd.grpc.v1.cri".registry.configs."localhost:5001"]',
+        '  [plugins."io.containerd.grpc.v1.cri".registry.configs."localhost:5001".tls]',
+        '    insecure_skip_verify = true',
     ]
 
     # Escape each line for shell and write via printf
