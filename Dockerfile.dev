@@ -1,0 +1,56 @@
+# Copyright 2023 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Development Dockerfile for kube-startup-cpu-boost (Tilt/local dev)
+# Binary is built on host and copied in
+# Uses alpine base for simplicity and debugging tools
+
+# Stage 1: Verify binary exists and is executable
+FROM alpine:3.19 AS verify
+WORKDIR /verify
+# Copy pre-built binary from bin directory
+COPY bin/manager /verify/manager
+# Verify binary exists in final location and fail if it doesn't
+RUN ls -la /verify/manager && \
+    test -f /verify/manager && \
+    test -s /verify/manager && \
+    test -x /verify/manager && \
+    echo "✅ Binary verification passed: $(ls -lh /verify/manager)" || \
+    (echo "❌ ERROR: Binary missing or invalid in /verify/manager" && exit 1)
+
+# Stage 2: Final image with tools available for debugging
+FROM alpine:3.19
+WORKDIR /
+
+# Create a non-root user for running the manager
+# Using UID 1000 (standard non-root user) and GID 1000
+RUN addgroup -g 1000 nonroot && \
+    adduser -D -u 1000 -G nonroot nonroot
+
+# Copy verified binary from verify stage (proven to exist)
+COPY --from=verify --chmod=755 /verify/manager /manager
+
+# Verify binary exists in final location
+RUN ls -la /manager && \
+    test -f /manager && \
+    test -s /manager && \
+    test -x /manager && \
+    echo "✅ Final binary verification passed: $(ls -lh /manager)" || \
+    (echo "❌ ERROR: Binary missing in final location /manager" && exit 1)
+
+# Switch to non-root user
+USER nonroot:nonroot
+
+# Run the manager
+ENTRYPOINT ["/manager"]

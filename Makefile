@@ -182,6 +182,10 @@ helmify: $(HELMIFY) ## Download helmify locally if necessary.
 $(HELMIFY): $(LOCALBIN)
 	test -s $(LOCALBIN)/helmify || GOBIN=$(LOCALBIN) go install github.com/arttor/helmify/cmd/helmify@latest
 
-helm: manifests kustomize helmify
+helm: manifests kustomize helmify ## Generate Helm chart from kustomize output.
 	$(KUSTOMIZE) build . | $(HELMIFY)
 	@sed -i 's/\(.\+tag: v[0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1 #x-release-please-version/g' ${HELM_CHART_ROOT}/values.yaml
+
+.PHONY: sync-helm-crd
+sync-helm-crd: manifests ## Sync CRD schema from generated CRD to Helm chart template. Run this after updating API types.
+	@python3 scripts/sync_helm_crd.py

@@ -12,20 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-
-resources:
-  - examples/postgresql-pvc.yaml
-  - examples/postgresql-with-envoy-runtime.yaml
-  - examples/spring-demo-app.yaml
-  - examples/spring-demo-app-startupcpuboost.yaml
-# Uncomment for Google Managed Prometheus metrics scraping
-#- examples/spring-app-demo-gmp.yaml
-
-namespace: demo
-
-configMapGenerator:
-- name: spring-demo-app-config
-  files:
-  - application.yaml
+apiVersion: autoscaling.x-k8s.io/v1alpha1
+kind: StartupCPUBoost
+metadata:
+  name: test-boost
+  namespace: default
+selector:
+  matchLabels:
+    app: test
+spec:
+  resourcePolicy:
+    containerPolicies:
+    - containerName: test-container
+      fixedResources:
+        requests: "2"
+        limits: "4"
+  durationPolicy:
+    fixedDuration:
+      unit: Minutes
+      value: 5
+  triggers:
+  - type: PodCreate

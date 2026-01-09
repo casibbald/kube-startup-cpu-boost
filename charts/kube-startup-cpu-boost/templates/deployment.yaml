@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: kube-startup-cpu-boost-controller-manager
+  namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/component: manager
     app.kubernetes.io/created-by: kube-startup-cpu-boost
@@ -54,8 +55,10 @@ spec:
           httpGet:
             path: /healthz
             port: 8081
-          initialDelaySeconds: 15
-          periodSeconds: 20
+          initialDelaySeconds: {{ .Values.controllerManager.manager.livenessProbe.initialDelaySeconds | default 15 }}
+          periodSeconds: {{ .Values.controllerManager.manager.livenessProbe.periodSeconds | default 20 }}
+          timeoutSeconds: {{ .Values.controllerManager.manager.livenessProbe.timeoutSeconds | default 5 }}
+          failureThreshold: {{ .Values.controllerManager.manager.livenessProbe.failureThreshold | default 3 }}
         name: manager
         ports:
         - containerPort: 9443
@@ -67,8 +70,10 @@ spec:
           httpGet:
             path: /readyz
             port: 8081
-          initialDelaySeconds: 5
-          periodSeconds: 10
+          initialDelaySeconds: {{ .Values.controllerManager.manager.readinessProbe.initialDelaySeconds | default 10 }}
+          periodSeconds: {{ .Values.controllerManager.manager.readinessProbe.periodSeconds | default 10 }}
+          timeoutSeconds: {{ .Values.controllerManager.manager.readinessProbe.timeoutSeconds | default 5 }}
+          failureThreshold: {{ .Values.controllerManager.manager.readinessProbe.failureThreshold | default 3 }}
         resources: {{- toYaml .Values.controllerManager.manager.resources | nindent 10
           }}
         securityContext: {{- toYaml .Values.controllerManager.manager.containerSecurityContext

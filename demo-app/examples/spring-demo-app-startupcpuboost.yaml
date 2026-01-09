@@ -1,0 +1,50 @@
+# Copyright 2023 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: autoscaling.x-k8s.io/v1alpha1
+kind: StartupCPUBoost
+metadata:
+  name: spring-demo-app-boost
+  namespace: demo
+selector:
+  matchLabels:
+    app.kubernetes.io/name: spring-demo-app
+spec:
+  resourcePolicy:
+    containerPolicies:
+    - containerName: spring-demo-app
+      fixedResources:
+        requests: "2"
+        limits: "4"
+  durationPolicy:
+    fixedDuration:
+      unit: Minutes
+      value: 5
+  triggers:
+  # Boost on pod creation (initial startup)
+  - type: PodCreate
+  # Boost when containers restart (recovery from crashes)
+  - type: ContainerRestart
+    containerName: spring-demo-app
+  # Boost when pod recovers from NotReady to Ready (recovery scenarios)
+  - type: PodConditionTransition
+    conditionType: Ready
+    fromStatus: "False"
+    toStatus: "True"
+  # Cooldown policy to prevent excessive activations during crash loops
+  cooldown:
+    # Minimum 5 minutes between activations
+    minIntervalSeconds: 300
+    # Maximum 3 activations per hour
+    maxActivationsPerHour: 3

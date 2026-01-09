@@ -22,6 +22,39 @@ coverage_dir := "coverage"
 default:
     @just --list
 
+# ============================================================================
+# Development Environment
+# ============================================================================
+
+# Start development environment (Kind + Tilt)
+dev-up: kind-setup tilt-up
+
+# Stop development environment (Tilt + optionally Kind)
+dev-down: tilt-down
+    @echo "💡 To delete Kind cluster, run: just kind-delete"
+
+# Setup Kind cluster and registry
+kind-setup:
+    @echo "🚀 Setting up Kind cluster and registry..."
+    @python3 scripts/setup_kind.py
+
+# Delete Kind cluster
+kind-delete:
+    @echo "🗑️  Deleting Kind cluster..."
+    @kind delete cluster --name kube-startup-cpu-boost || echo "Cluster not found or already deleted"
+    @echo "✅ Kind cluster deleted"
+
+# Start Tilt only (assumes cluster is already running)
+tilt-up:
+    @echo "🎯 Starting Tilt..."
+    @echo "   Tilt UI: http://localhost:10350"
+    @tilt up
+
+# Stop Tilt only
+tilt-down:
+    @echo "🛑 Stopping Tilt..."
+    @tilt down || echo "Tilt not running or already stopped"
+
 # Run all tests with coverage
 test:
     @just coverage
@@ -144,3 +177,62 @@ test-coverage-all:
     @just test
     @just coverage-all
 
+# ============================================================================
+# Utilities
+# ============================================================================
+
+# Show cluster status
+status:
+    @echo "📊 Cluster Status..."
+    @kubectl cluster-info --context kind-kube-startup-cpu-boost 2>/dev/null || echo "⚠️  Kind cluster not found. Run 'just kind-setup' first."
+    @echo ""
+    @echo "📦 Pods in kube-startup-cpu-boost-system:"
+    @kubectl get pods -n kube-startup-cpu-boost-system 2>/dev/null || echo "⚠️  Namespace not found or cluster not accessible."
+    @echo ""
+    @echo "🔧 Controller Manager logs (last 20 lines):"
+    @kubectl logs -n kube-startup-cpu-boost-system -l control-plane=controller-manager --tail=20 2>/dev/null || echo "⚠️  Controller not found or not running."
+
+# Show controller manager logs
+logs:
+    @echo "📜 Controller Manager logs..."
+    @kubectl logs -n kube-startup-cpu-boost-system -l control-plane=controller-manager --tail=100 -f
+
+# Port forward to controller manager metrics
+port-forward-metrics:
+    @echo "🔌 Port forwarding to Controller Manager metrics (8080)..."
+    @kubectl port-forward -n kube-startup-cpu-boost-system svc/kube-startup-cpu-boost-controller-manager-metrics 8080:8080
+
+# Port forward to controller manager health probe
+port-forward-health:
+    @echo "🔌 Port forwarding to Controller Manager health probe (8081)..."
+    @kubectl port-forward -n kube-startup-cpu-boost-system svc/kube-startup-cpu-boost-controller-manager-metrics 8081:8081
+
+# ============================================================================
+# Documentation
+# ============================================================================
+
+# Check markdown links in a specific file
+check-links file:
+    #!/usr/bin/env bash
+    set -e
+    if ! command -v markdown-link-check &> /dev/null; then
+        echo "⚠️  markdown-link-check not found. Installing..."
+        npm install -g markdown-link-check
+    fi
+    echo "🔍 Checking links in {{file}}..."
+    markdown-link-check {{file}} --config .mlc_config.json
+
+# Check markdown links in all markdown files (excluding docs/)
+check-links-all:
+    #!/usr/bin/env bash
+    set -e
+    if ! command -v markdown-link-check &> /dev/null; then
+        echo "⚠️  markdown-link-check not found. Installing..."
+        npm install -g markdown-link-check
+    fi
+    echo "🔍 Checking links in all markdown files..."
+    find . -name "*.md" -not -path "./docs/*" -not -path "./.git/*" -not -path "./node_modules/*" | while read -r file; do
+        echo ""
+        echo "Checking: $file"
+        markdown-link-check "$file" --config .mlc_config.json || true
+    done

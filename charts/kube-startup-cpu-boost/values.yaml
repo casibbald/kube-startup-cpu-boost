@@ -1,17 +1,13 @@
+kubernetesClusterDomain: cluster.local
+
 controllerManager:
+  replicas: 1
   manager:
-    containerSecurityContext:
-      allowPrivilegeEscalation: false
-      capabilities:
-        drop:
-        - ALL
-      seccompProfile:
-        type: RuntimeDefault
+    image:
+      repository: ""
+      tag: ""
     env:
       leaderElection: "true"
-    image:
-      repository: ghcr.io/google/kube-startup-cpu-boost
-      tag: v0.17.1 #x-release-please-version
     resources:
       limits:
         cpu: 500m
@@ -19,15 +15,39 @@ controllerManager:
       requests:
         cpu: 10m
         memory: 64Mi
-  podSecurityContext:
-    runAsNonRoot: true
-  replicas: 1
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - "ALL"
+      seccompProfile:
+        type: RuntimeDefault
+    livenessProbe:
+      initialDelaySeconds: 15
+      periodSeconds: 20
+      timeoutSeconds: 5
+      failureThreshold: 3
+    readinessProbe:
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
   serviceAccount:
     annotations: {}
-kubernetesClusterDomain: cluster.local
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+
 webhookService:
-  ports:
-  - port: 443
-    protocol: TCP
-    targetPort: 9443
   type: ClusterIP
+  ports:
+    - port: 443
+      protocol: TCP
+      appProtocol: https
+      targetPort: 9443
+
+serviceAccount:
+  create: true
+  name: ""

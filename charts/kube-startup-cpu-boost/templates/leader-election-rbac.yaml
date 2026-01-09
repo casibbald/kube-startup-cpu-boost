@@ -2,6 +2,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: kube-startup-cpu-boost-leader-election-role
+  namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/component: rbac
     app.kubernetes.io/created-by: kube-startup-cpu-boost
@@ -44,6 +45,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: kube-startup-cpu-boost-leader-election-rolebinding
+  namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/component: rbac
     app.kubernetes.io/created-by: kube-startup-cpu-boost
