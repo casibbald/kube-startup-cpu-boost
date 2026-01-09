@@ -249,6 +249,13 @@ func (r *StartupCPUBoostReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	meta.SetStatusCondition(&newBoostObj.Status.Conditions, activeCondition)
 
+	// Ensure all conditions have the current ObservedGeneration
+	// SetStatusCondition only updates ObservedGeneration if the condition changed,
+	// so we need to manually update it to ensure it always reflects the current generation
+	for i := range newBoostObj.Status.Conditions {
+		newBoostObj.Status.Conditions[i].ObservedGeneration = boostObj.Generation
+	}
+
 	// Debug: Log condition details before comparison
 	log.V(5).Info("status comparison",
 		"oldConditionsCount", len(boostObj.Status.Conditions),

@@ -577,20 +577,6 @@ func boostContainersLen(pod *corev1.Pod) (cnt int) {
 	return
 }
 
-// activeBoostContainersLen returns the number of containers that currently have an active boost
-// (i.e., containers with a current activation that hasn't expired)
-func activeBoostContainersLen(pod *corev1.Pod) (cnt int) {
-	if annot, err := bpod.BoostAnnotationFromPod(pod); err == nil {
-		// Only count containers if there's a current active boost
-		currentActivation := annot.GetCurrentActivation()
-		if currentActivation != nil {
-			// Count containers that have boost annotations (they're actively boosted)
-			return len(annot.InitCPURequests)
-		}
-	}
-	return
-}
-
 // mapDurationPolicy maps the Duration Policy from the API spec to the map of policy
 // implementations with policy name keys
 func mapDurationPolicy(policiesSpec autoscaling.DurationPolicy) map[string]duration.Policy {
