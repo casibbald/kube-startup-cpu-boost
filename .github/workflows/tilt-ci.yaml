@@ -104,7 +104,7 @@ jobs:
           # Try to start registry
           # Docker will fail with a clear error if port is unavailable
           echo "Starting registry on port 5001..."
-          if ! docker run -d --restart=always -p 5001:5001 --name kind-registry registry:2; then
+          if ! docker run -d --restart=always -p 5001:5001 -e REGISTRY_HTTP_ADDR=0.0.0.0:5001 --name kind-registry registry:2; then
             echo "❌ Failed to start registry on port 5001"
             echo "Checking for containers using port 5001:"
             docker ps --format "table {{.Names}}\t{{.Ports}}" | grep 5001 || echo "No Docker containers found using port 5001"

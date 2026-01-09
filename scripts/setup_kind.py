@@ -148,6 +148,7 @@ def setup_registry():
     )
     run_command(
         f"docker run -d --restart=always -p 127.0.0.1:{REGISTRY_PORT}:{REGISTRY_PORT} "
+        f"-e REGISTRY_HTTP_ADDR=0.0.0.0:{REGISTRY_PORT} "
         f"-v {volume_name}:/var/lib/registry --name {REGISTRY_NAME} registry:2"
     )
     log_info(f"✅ Created registry '{REGISTRY_NAME}' on port {REGISTRY_PORT} with persistent volume '{volume_name}'")
