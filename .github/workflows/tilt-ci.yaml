@@ -19,11 +19,11 @@ on:
     branches:
       - main
       - development
-      - 'story/**'
   pull_request:
     branches:
       - main
       - development
+      - 'story/**'
   workflow_dispatch:
 
 permissions:

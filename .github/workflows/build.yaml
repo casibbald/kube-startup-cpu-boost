@@ -18,13 +18,13 @@ on:
     branches:
       - main
       - development
-      - 'story/**'
     paths-ignore:
       - 'demo-app/**'
   pull_request:
     branches:
       - main
       - development
+      - 'story/**'
     paths-ignore:
       - 'demo-app/**'
 
