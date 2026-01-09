@@ -51,14 +51,14 @@ PROJECT_DIR = '.'
 # ====================
 # Architecture Detection
 # ====================
-# Detect the Kind cluster architecture to build for the correct platform
-# This ensures the binary and image match the cluster architecture
+# Detect the Kind cluster architecture for Go binary build
+# This ensures the binary matches the cluster architecture
 # Works on both Intel (amd64) and Apple Silicon (arm64) hosts
 # Uses Python script for reliable cross-platform detection
+# Note: We use native docker build (no --platform flag) for host-aware builds
 arch_result = str(local('python3 scripts/detect_kind_architecture.py')).strip()
 arch_parts = arch_result.split(' ')
 GO_ARCH = arch_parts[0]
-DOCKER_PLATFORM = arch_parts[1] if len(arch_parts) > 1 else 'linux/amd64'
 
 # ====================
 # CRD Generation
@@ -142,14 +142,19 @@ local_resource(
      echo "✅ Binary exists: $(ls -lh %s)" && \
      echo "✅ Binary size: $(stat -c%%s %s 2>/dev/null || stat -f%%z %s) bytes" && \
      echo "✅ Binary architecture: $(file %s 2>/dev/null || echo "file command not available")" && \
-     echo "✅ Target platform: %s" && \
      echo "✅ Verifying binary is in Docker build context..." && \
      ls -lh bin/manager && \
      pwd && \
-     echo "=== Starting Docker Build ===" && \
-     docker buildx build --load --no-cache --platform %s -f Dockerfile.dev -t %s --rm --force-rm . && \
+     echo "=== Starting Docker Build (host-aware, no --platform) ===" && \
+     docker build --no-cache -f Dockerfile.dev -t %s --rm --force-rm . && \
+     echo "=== Post-Build Image Verification ===" && \
+     echo "Verifying binary exists in final image..." && \
+     docker run --rm %s ls -lh /manager && \
+     docker run --rm %s test -f /manager && \
+     docker run --rm %s test -x /manager && \
+     echo "✅ Binary verified in final image" && \
      echo "=== Pushing Image ===" && \
-     docker push %s' % (BINARY_PATH, BINARY_PATH, BINARY_PATH, BINARY_PATH, BINARY_PATH, BINARY_PATH, DOCKER_PLATFORM, DOCKER_PLATFORM, IMAGE_REF, IMAGE_REF),
+     docker push %s' % (BINARY_PATH, BINARY_PATH, BINARY_PATH, BINARY_PATH, BINARY_PATH, BINARY_PATH, IMAGE_REF, IMAGE_REF, IMAGE_REF, IMAGE_REF, IMAGE_REF),
     deps=[
         BINARY_PATH,
         'Dockerfile.dev',
@@ -257,7 +262,7 @@ local_resource(
     'docker-build-demo-app',
     # Verify JAR exists before building
     # Use --no-cache to ensure JAR is always included
-    cmd='test -f %s && test -s %s && echo "JAR exists: $(ls -lh %s)" && docker buildx build --load --no-cache --platform %s -f %s/Dockerfile -t %s --rm --force-rm --build-arg JAR_FILE=target/spring-demo-app-0.0.1-SNAPSHOT.jar %s && docker push %s' % (DEMO_APP_JAR, DEMO_APP_JAR, DEMO_APP_JAR, DOCKER_PLATFORM, DEMO_APP_DIR, DEMO_APP_IMAGE_REF, DEMO_APP_DIR, DEMO_APP_IMAGE_REF),
+    cmd='test -f %s && test -s %s && echo "JAR exists: $(ls -lh %s)" && docker build --no-cache -f %s/Dockerfile -t %s --rm --force-rm --build-arg JAR_FILE=target/spring-demo-app-0.0.1-SNAPSHOT.jar %s && docker push %s' % (DEMO_APP_JAR, DEMO_APP_JAR, DEMO_APP_JAR, DEMO_APP_DIR, DEMO_APP_IMAGE_REF, DEMO_APP_DIR, DEMO_APP_IMAGE_REF),
     deps=[
         DEMO_APP_JAR,
         '%s/Dockerfile' % DEMO_APP_DIR,
