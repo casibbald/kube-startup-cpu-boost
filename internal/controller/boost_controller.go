@@ -81,40 +81,68 @@ func (r *StartupCPUBoostReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		Reason:  BoostActiveConditionFalseReason,
 		Message: BoostActiveConditionFalseMessage,
 	}
-	boost, ok := r.Manager.GetRegularCPUBoost(ctx, boostObj.Name, boostObj.Namespace)
-	if ok {
-		log.V(5).Info("found boost in a manager")
-		stats := boost.Stats()
-		activeCondition.Status = metav1.ConditionTrue
-		activeCondition.Reason = BoostActiveConditionTrueReason
-		activeCondition.Message = BoostActiveConditionTrueMessage
-		newBoostObj.Status.ActiveContainerBoosts = int32(stats.ActiveContainerBoosts)
-		newBoostObj.Status.TotalContainerBoosts = int32(stats.TotalContainerBoosts)
-
-		// Check for PodCreate triggers and emit activation events if needed
-		// PodCreate boosts are applied in the webhook, so we emit events when we see
-		// pods that were recently created with PodCreate boosts
-		if boost.ShouldActivateForPodCreate() {
-			if err := r.emitPodCreateActivationEvents(ctx, boost, log); err != nil {
-				log.Error(err, "failed to emit PodCreate activation events")
-				// Don't fail reconciliation, just log the error
+	boostInstance, ok := r.Manager.GetRegularCPUBoost(ctx, boostObj.Name, boostObj.Namespace)
+	if !ok {
+		// Boost not found in manager, create it from the current spec
+		log.V(5).Info("boost not found in manager, creating from spec")
+		newBoost, err := boost.NewStartupCPUBoost(r.Client, &boostObj, r.LegacyRevertMode)
+		if err != nil {
+			log.Error(err, "failed to create boost from spec")
+			return ctrl.Result{}, err
+		}
+		if err := r.Manager.AddRegularCPUBoost(ctx, newBoost); err != nil {
+			log.Error(err, "failed to add boost to manager")
+			return ctrl.Result{}, err
+		}
+		boostInstance = newBoost
+	} else {
+		// Boost exists, ensure it's up-to-date with the current spec
+		// This handles cases where the Update event handler hasn't run yet
+		log.V(5).Info("found boost in manager, ensuring it's up-to-date")
+		if err := r.Manager.UpdateRegularCPUBoost(ctx, &boostObj); err != nil {
+			log.Error(err, "failed to update boost from spec")
+			// Continue with existing boost rather than failing reconciliation
+		} else {
+			// Re-fetch the updated boost
+			boostInstance, ok = r.Manager.GetRegularCPUBoost(ctx, boostObj.Name, boostObj.Namespace)
+			if !ok {
+				log.Error(nil, "boost disappeared after update")
+				return ctrl.Result{Requeue: true}, nil
 			}
 		}
+	}
 
-		// Check for ContainerRestart triggers and apply runtime boosts if needed
-		if boost.HasContainerRestartTrigger() {
-			if err := r.applyRuntimeBoostsForContainerRestart(ctx, boost, boostObj.Spec.Cooldown, log); err != nil {
-				log.Error(err, "failed to apply runtime boosts for ContainerRestart triggers")
-				// Don't fail reconciliation, just log the error
-			}
+	log.V(5).Info("processing boost")
+	stats := boostInstance.Stats()
+	activeCondition.Status = metav1.ConditionTrue
+	activeCondition.Reason = BoostActiveConditionTrueReason
+	activeCondition.Message = BoostActiveConditionTrueMessage
+	newBoostObj.Status.ActiveContainerBoosts = int32(stats.ActiveContainerBoosts)
+	newBoostObj.Status.TotalContainerBoosts = int32(stats.TotalContainerBoosts)
+
+	// Check for PodCreate triggers and emit activation events if needed
+	// PodCreate boosts are applied in the webhook, so we emit events when we see
+	// pods that were recently created with PodCreate boosts
+	if boostInstance.ShouldActivateForPodCreate() {
+		if err := r.emitPodCreateActivationEvents(ctx, boostInstance, log); err != nil {
+			log.Error(err, "failed to emit PodCreate activation events")
+			// Don't fail reconciliation, just log the error
 		}
+	}
 
-		// Check for PodConditionTransition triggers and apply runtime boosts if needed
-		if boost.HasPodConditionTransitionTrigger() {
-			if err := r.applyRuntimeBoostsForPodConditionTransition(ctx, boost, boostObj.Spec.Cooldown, log); err != nil {
-				log.Error(err, "failed to apply runtime boosts for PodConditionTransition triggers")
-				// Don't fail reconciliation, just log the error
-			}
+	// Check for ContainerRestart triggers and apply runtime boosts if needed
+	if boostInstance.HasContainerRestartTrigger() {
+		if err := r.applyRuntimeBoostsForContainerRestart(ctx, boostInstance, boostObj.Spec.Cooldown, log); err != nil {
+			log.Error(err, "failed to apply runtime boosts for ContainerRestart triggers")
+			// Don't fail reconciliation, just log the error
+		}
+	}
+
+	// Check for PodConditionTransition triggers and apply runtime boosts if needed
+	if boostInstance.HasPodConditionTransitionTrigger() {
+		if err := r.applyRuntimeBoostsForPodConditionTransition(ctx, boostInstance, boostObj.Spec.Cooldown, log); err != nil {
+			log.Error(err, "failed to apply runtime boosts for PodConditionTransition triggers")
+			// Don't fail reconciliation, just log the error
 		}
 	}
 	meta.SetStatusCondition(&newBoostObj.Status.Conditions, activeCondition)
@@ -136,22 +164,41 @@ func (r *StartupCPUBoostReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 // SetupWithManager sets up the controller with the Manager.
 func (r *StartupCPUBoostReconciler) SetupWithManager(mgr ctrl.Manager,
 	serverVersion string) error {
+	setupLog := ctrl.Log.WithName("boost-controller-setup")
+	setupLog.Info("SetupWithManager: starting controller setup")
+
+	setupLog.Info("SetupWithManager: creating boost pod handler")
 	boostPodHandler := NewBoostPodHandler(r.Manager, ctrl.Log.WithName("pod-handler"))
+
+	setupLog.Info("SetupWithManager: creating label selector predicate")
 	lsPredicate, err := predicate.LabelSelectorPredicate(*boostPodHandler.GetPodLabelSelector())
 	if err != nil {
+		setupLog.Error(err, "SetupWithManager: failed to create label selector predicate")
 		return err
 	}
+	setupLog.Info("SetupWithManager: label selector predicate created")
+
 	r.LegacyRevertMode = shouldUseLegacyRevertMode(serverVersion)
+	setupLog.Info("SetupWithManager: legacy revert mode determined", "legacyRevertMode", r.LegacyRevertMode)
+
+	setupLog.Info("SetupWithManager: getting event recorder")
 	r.Recorder = mgr.GetEventRecorderFor("startupcpuboost-controller")
-	ctrl.Log.WithName("boost-controller-setup").WithValues("legacyRevertMode", r.LegacyRevertMode).
-		V(5).Info("setting legacy revert mode")
-	return ctrl.NewControllerManagedBy(mgr).
+	setupLog.Info("SetupWithManager: event recorder obtained")
+
+	setupLog.Info("SetupWithManager: building controller with manager")
+	err = ctrl.NewControllerManagedBy(mgr).
 		For(&autoscaling.StartupCPUBoost{}).
 		Watches(&corev1.Pod{},
 			boostPodHandler,
 			builder.WithPredicates(lsPredicate)).
 		WithEventFilter(r).
 		Complete(r)
+	if err != nil {
+		setupLog.Error(err, "SetupWithManager: failed to build controller")
+		return err
+	}
+	setupLog.Info("SetupWithManager: controller setup completed successfully")
+	return nil
 }
 
 func (r *StartupCPUBoostReconciler) Create(e event.CreateEvent) bool {

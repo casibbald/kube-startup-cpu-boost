@@ -45,8 +45,9 @@ spec:
           mountPath: /config
         ports:
         - name: http
-          containerPort: 8080
+          containerPort: 5000
         startupProbe:
+          initialDelaySeconds: 15  # Wait 15 seconds before first check (app takes ~4s to start)
           periodSeconds: 2
           failureThreshold: 60
           httpGet:
@@ -54,6 +55,9 @@ spec:
             port: http
             scheme: HTTP
         livenessProbe:
+          initialDelaySeconds: 15  # Wait 15 seconds before first check (app takes ~4s to start)
+          periodSeconds: 2
+          failureThreshold: 60
           httpGet:
             path: /actuator/health
             port: http
@@ -78,5 +82,5 @@ spec:
   selector:
     app.kubernetes.io/name: spring-demo-app
   ports:
-  - port: 8080
+  - port: 5000
     targetPort: http

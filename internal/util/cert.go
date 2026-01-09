@@ -16,6 +16,7 @@ package util
 
 import (
 	"fmt"
+	"time"
 
 	cert "github.com/open-policy-agent/cert-controller/pkg/rotator"
 	"k8s.io/apimachinery/pkg/types"
@@ -39,6 +40,14 @@ const (
 
 func ManageCerts(mgr ctrl.Manager, namespace string, setupFinished chan struct{}) error {
 	dnsName := fmt.Sprintf("%s.%s.svc", webhookServiceName, namespace)
+	// CertRotator uses k8s.io/apimachinery/pkg/util/wait.ExponentialBackoff internally
+	// for retrying failed cert refresh operations. The backoff uses exponential backoff
+	// with increasing delays between retries. The startup delay in main.go helps reduce
+	// initial conflicts by giving the Kubernetes API server time to fully initialize.
+	//
+	// RotationCheckFrequency controls how often the cert rotator checks if certificates
+	// need to be refreshed. Increasing this reduces the frequency of checks and potential
+	// conflicts. Default is 10 minutes if not set.
 	return cert.AddRotator(mgr, &cert.CertRotator{
 		SecretKey: types.NamespacedName{
 			Namespace: namespace,
@@ -57,5 +66,8 @@ func ManageCerts(mgr ctrl.Manager, namespace string, setupFinished chan struct{}
 			Name: boostValidatingWebHookName,
 		}},
 		RequireLeaderElection: false,
+		// Increase rotation check frequency to reduce conflicts
+		// Default is 10 minutes, setting to 15 minutes gives more time between checks
+		RotationCheckFrequency: 15 * time.Minute,
 	})
 }

@@ -27,3 +27,5 @@ docs/
 coverage/
 coverage.html
 coverage.out
+.actrc
+__pycache__

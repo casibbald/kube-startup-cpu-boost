@@ -16,7 +16,11 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-- examples/spring-demo-app.yaml
+  - examples/namespace.yaml
+  - examples/postgresql-pvc.yaml
+  - examples/postgresql-with-envoy-runtime.yaml
+  - examples/spring-demo-app.yaml
+  - examples/spring-demo-app-startupcpuboost.yaml
 # Uncomment for Google Managed Prometheus metrics scraping
 #- examples/spring-app-demo-gmp.yaml
 

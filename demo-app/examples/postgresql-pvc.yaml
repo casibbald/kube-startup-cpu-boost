@@ -12,18 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Release Dockerfile for kube-startup-cpu-boost (GoReleaser)
-# Binary is built by GoReleaser and placed in root as 'manager'
-# Uses distroless base for minimal runtime
-FROM gcr.io/distroless/static:nonroot
-WORKDIR /
+# PersistentVolumeClaim for PostgreSQL data
+# Uses Kind's local-path-provisioner for dynamic provisioning
+# This allows data to persist across pod restarts
 
-# Copy pre-built binary from GoReleaser build output
-# GoReleaser places the binary in the root of the build context as 'manager'
-# --chmod ensures the binary is executable
-COPY --chmod=755 manager /manager
-
-USER 65532:65532
-
-# Run the manager
-ENTRYPOINT ["/manager"]
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgresql-data
+  namespace: demo
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard  # Kind's local-path-provisioner (auto-detected, can be 'standard' or 'local-path')
+  resources:
+    requests:
+      storage: 1Gi  # 1GB should be sufficient for testing

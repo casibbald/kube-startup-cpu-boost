@@ -1,0 +1,330 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spring-demo-app
+  namespace: demo
+---
+apiVersion: v1
+data:
+  envoy.yaml: |
+    admin:
+      address:
+        socket_address:
+          protocol: TCP
+          address: 0.0.0.0
+          port_value: 9901
+    static_resources:
+      listeners:
+      - name: postgres_listener
+        address:
+          socket_address:
+            protocol: TCP
+            address: 0.0.0.0
+            port_value: 5432
+        filter_chains:
+        - filters:
+          - name: envoy.filters.network.tcp_proxy
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+              stat_prefix: postgres_tcp
+              cluster: postgres_cluster
+              # Enable access logging to see connection attempts
+              access_log:
+              - name: envoy.access_loggers.stdout
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+      clusters:
+      - name: postgres_cluster
+        connect_timeout: 5s
+        type: STATIC_DNS
+        lb_policy: ROUND_ROBIN
+        load_assignment:
+          cluster_name: postgres_cluster
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    protocol: TCP
+                    address: 127.0.0.1
+                    port_value: 5433
+kind: ConfigMap
+metadata:
+  name: postgresql-envoy-config
+  namespace: demo
+---
+apiVersion: v1
+data:
+  application.yaml: |
+    # Copyright 2023 Google LLC
+    #
+    # Licensed under the Apache License, Version 2.0 (the "License");
+    # you may not use this file except in compliance with the License.
+    # You may obtain a copy of the License at
+    #
+    #      https://www.apache.org/licenses/LICENSE-2.0
+    #
+    # Unless required by applicable law or agreed to in writing, software
+    # distributed under the License is distributed on an "AS IS" BASIS,
+    # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    # See the License for the specific language governing permissions and
+    # limitations under the License.
+
+    spring:
+      datasource:
+        url: jdbc:postgresql://postgresql:5432/mydb
+        username: postgres
+        password: postgres
+        driverClassName: org.postgresql.Driver
+        hikari:
+          connection-timeout: 5000
+          maximum-pool-size: 5
+          minimum-idle: 2
+      jpa:
+        hibernate:
+          ddl-auto: create
+        database-platform: org.hibernate.dialect.PostgreSQLDialect
+        defer-datasource-initialization: true
+      sql:
+        init:
+          mode: always  # Enable SQL script execution (data.sql)
+    management:
+      endpoints:
+        web:
+          exposure:
+            include:
+              - health
+              - prometheus
+kind: ConfigMap
+metadata:
+  name: spring-demo-app-config-h96mf6bh72
+  namespace: demo
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgresql-secret
+  namespace: demo
+stringData:
+  postgres-db: mydb
+  postgres-password: postgres
+  postgres-user: postgres
+type: Opaque
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql
+  namespace: demo
+spec:
+  ports:
+  - name: postgres
+    port: 5432
+    targetPort: 5432
+  - name: envoy-admin
+    port: 9901
+    targetPort: 9901
+  selector:
+    app: postgresql
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spring-demo-app
+  namespace: demo
+spec:
+  ports:
+  - port: 5000
+    targetPort: http
+  selector:
+    app.kubernetes.io/name: spring-demo-app
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgresql
+  namespace: demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgresql
+  template:
+    metadata:
+      labels:
+        app: postgresql
+    spec:
+      containers:
+      - env:
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              key: postgres-user
+              name: postgresql-secret
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: postgres-password
+              name: postgresql-secret
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              key: postgres-db
+              name: postgresql-secret
+        - name: PGPORT
+          value: "5433"
+        image: postgres:15-alpine
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U postgres -p 5433
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        name: postgresql
+        ports:
+        - containerPort: 5433
+          name: postgres-int
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U postgres -p 5433
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 256Mi
+        volumeMounts:
+        - mountPath: /var/lib/postgresql/data
+          name: postgresql-data
+      - args:
+        - -c
+        - /etc/envoy/envoy.yaml
+        - --service-cluster
+        - postgres-proxy
+        - --service-node
+        - postgres-proxy
+        - --log-level
+        - info
+        command:
+        - /usr/local/bin/envoy
+        image: envoyproxy/envoy:v1.28-latest
+        name: envoy
+        ports:
+        - containerPort: 5432
+          name: postgres
+        - containerPort: 9901
+          name: envoy-admin
+        resources:
+          limits:
+            cpu: 200m
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+        volumeMounts:
+        - mountPath: /etc/envoy
+          name: envoy-config
+      volumes:
+      - emptyDir: {}
+        name: postgresql-data
+      - configMap:
+          name: postgresql-envoy-config
+        name: envoy-config
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spring-demo-app
+  namespace: demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spring-demo-app
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spring-demo-app
+    spec:
+      containers:
+      - args:
+        - --spring.config.location=file:/config/application.yaml
+        env:
+        - name: JAVA_OPTS
+          value: -XX:MaxRAMPercentage=75
+        image: ghcr.io/google/spring-demo-app:latest
+        livenessProbe:
+          httpGet:
+            path: /actuator/health
+            port: http
+            scheme: HTTP
+        name: spring-demo-app
+        ports:
+        - containerPort: 5000
+          name: http
+        resources:
+          limits:
+            cpu: "1"
+            memory: 512Mi
+          requests:
+            cpu: 500m
+            memory: 512Mi
+        startupProbe:
+          failureThreshold: 60
+          httpGet:
+            path: /actuator/health
+            port: http
+            scheme: HTTP
+          periodSeconds: 2
+        volumeMounts:
+        - mountPath: /config
+          name: spring-demo-app-config
+      serviceAccountName: spring-demo-app
+      volumes:
+      - configMap:
+          name: spring-demo-app-config-h96mf6bh72
+        name: spring-demo-app-config
+---
+apiVersion: autoscaling.x-k8s.io/v1alpha1
+kind: StartupCPUBoost
+metadata:
+  name: spring-demo-app-boost
+  namespace: demo
+selector:
+  matchLabels:
+    app.kubernetes.io/name: spring-demo-app
+spec:
+  cooldown:
+    maxActivationsPerHour: 3
+    minIntervalSeconds: 300
+  durationPolicy:
+    fixedDuration:
+      unit: Minutes
+      value: 5
+  resourcePolicy:
+    containerPolicies:
+    - containerName: spring-demo-app
+      fixedResources:
+        limits: "4"
+        requests: "2"
+  triggers:
+  - type: PodCreate
+  - containerName: spring-demo-app
+    type: ContainerRestart
+  - conditionType: Ready
+    fromStatus: "False"
+    toStatus: "True"
+    type: PodConditionTransition

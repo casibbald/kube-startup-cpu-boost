@@ -1,0 +1,214 @@
+# Copyright 2023 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Enhanced Envoy configuration with runtime-based traffic control
+# This configuration allows dynamic traffic blocking/unblocking via admin API
+# without requiring pod restarts.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgresql-envoy-config
+  namespace: demo
+data:
+  envoy.yaml: |
+    admin:
+      address:
+        socket_address:
+          protocol: TCP
+          address: 0.0.0.0
+          port_value: 9901
+    # Enable runtime configuration for dynamic control
+    layered_runtime:
+      layers:
+      - name: admin
+        admin_layer: {}
+    static_resources:
+      listeners:
+      - name: postgres_listener
+        address:
+          socket_address:
+            protocol: TCP
+            address: 0.0.0.0
+            port_value: 5432
+        filter_chains:
+        - filters:
+          # TCP proxy to PostgreSQL
+          - name: envoy.filters.network.tcp_proxy
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+              stat_prefix: postgres_tcp
+              cluster: postgres_cluster
+              # Enable access logging to see connection attempts
+              access_log:
+              - name: envoy.access_loggers.stdout
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+      clusters:
+      - name: postgres_cluster
+        connect_timeout: 5s
+        type: STATIC
+        lb_policy: ROUND_ROBIN
+        # Circuit breakers controlled via runtime configuration
+        # We can set max_connections to 0 via runtime to block all new connections
+        # This allows dynamic traffic control without pod restarts
+        circuit_breakers:
+          thresholds:
+            - priority: DEFAULT
+              # Default: allow connections (can be overridden via runtime)
+              # Runtime key: postgres_cluster.circuit_breakers.default.max_connections
+              max_connections: 1000
+              max_pending_requests: 1000
+              max_requests: 1000
+              max_retries: 3
+        load_assignment:
+          cluster_name: postgres_cluster
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    protocol: TCP
+                    address: 127.0.0.1
+                    port_value: 5433
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgresql-secret
+  namespace: demo
+type: Opaque
+stringData:
+  postgres-password: postgres
+  postgres-user: postgres
+  postgres-db: mydb
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql
+  namespace: demo
+spec:
+  selector:
+    app: postgresql
+  ports:
+  - name: postgres
+    port: 5432
+    targetPort: 5432  # Envoy listens on 5432
+  - name: envoy-admin
+    port: 9901
+    targetPort: 9901
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgresql
+  namespace: demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgresql
+  template:
+    metadata:
+      labels:
+        app: postgresql
+    spec:
+      containers:
+      # PostgreSQL container - runs on internal port 5433
+      - name: postgresql
+        image: postgres:15-alpine
+        ports:
+        - name: postgres-int
+          containerPort: 5433
+        env:
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secret
+              key: postgres-user
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secret
+              key: postgres-password
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-secret
+              key: postgres-db
+        - name: PGPORT
+          value: "5433"  # PostgreSQL listens on 5433 internally
+        volumeMounts:
+        - name: postgresql-data
+          mountPath: /var/lib/postgresql/data
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U postgres -p 5433
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U postgres -p 5433
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      # Envoy sidecar - proxies PostgreSQL on port 5432
+      - name: envoy
+        image: envoyproxy/envoy:v1.28-latest
+        ports:
+        - name: postgres
+          containerPort: 5432
+        - name: envoy-admin
+          containerPort: 9901
+        command:
+        - /usr/local/bin/envoy
+        args:
+        - -c
+        - /etc/envoy/envoy.yaml
+        - --service-cluster
+        - postgres-proxy
+        - --service-node
+        - postgres-proxy
+        - --log-level
+        - info
+        volumeMounts:
+        - name: envoy-config
+          mountPath: /etc/envoy
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+      volumes:
+      - name: postgresql-data
+        persistentVolumeClaim:
+          claimName: postgresql-data
+      - name: envoy-config
+        configMap:
+          name: postgresql-envoy-config

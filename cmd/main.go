@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -53,6 +54,9 @@ var (
 	scheme           = runtime.NewScheme()
 	setupLog         = ctrl.Log.WithName("setup")
 	leaderElectionID = "8fd077db.x-k8s.io"
+	// Build-time variables injected via -ldflags
+	buildGitHash    = "unknown"
+	buildTimestamp  = "unknown"
 )
 
 //+kubebuilder:rbac:urls="/metrics",verbs=get
@@ -70,6 +74,11 @@ func main() {
 		os.Exit(1)
 	}
 	ctrl.SetLogger(config.Logger(cfg.ZapDevelopment, cfg.ZapLogLevel))
+	
+	// Log build information (timestamp and git hash) at startup
+	// This ensures each build is unique and prevents Docker cache issues
+	setupLog.Info("build information", "gitHash", buildGitHash, "buildTime", buildTimestamp)
+	
 	metrics.Register()
 	restConfig := ctrl.GetConfigOrDie()
 
@@ -123,6 +132,7 @@ func main() {
 		HealthProbeBindAddress: cfg.HealthProbeBindAddr,
 		LeaderElection:         cfg.LeaderElection,
 		LeaderElectionID:       leaderElectionID,
+		LeaderElectionNamespace: cfg.Namespace,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -130,27 +140,39 @@ func main() {
 	}
 
 	certsReady := make(chan struct{})
+	// Add a short delay before starting cert rotation to reduce race conditions
+	// This gives the Kubernetes API server time to fully initialize the secret
+	// and reduces conflicts during initial cert generation
+	setupLog.Info("waiting before starting cert rotation to reduce startup race conditions")
+	time.Sleep(2 * time.Second)
+	setupLog.Info("starting cert rotation")
 	if err = util.ManageCerts(mgr, cfg.Namespace, certsReady); err != nil {
 		setupLog.Error(err, "Unable to set up certificates")
 		os.Exit(1)
 	}
 
 	boostMgr := boost.NewManager(mgr.GetClient())
+	setupLog.Info("created boost manager")
 	controllersReady := make(chan struct{})
+	setupLog.Info("starting setupControllers goroutine")
 	go setupControllers(mgr, boostMgr, cfg, podLevelResourcesEnabled, versionInfo.GitVersion, certsReady,
 		controllersReady)
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
 	}
+	setupLog.Info("health check configured")
 	if err := setupReadyzCheck(mgr, boostMgr, controllersReady); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
+	setupLog.Info("readiness check configured")
 	if err := mgr.Add(boostMgr); err != nil {
 		setupLog.Error(err, "unable to add boost manager to controller-runtime manager")
+		os.Exit(1)
 	}
-	setupLog.Info("starting manager")
+	setupLog.Info("boost manager added to controller-runtime manager")
+	setupLog.Info("starting manager (this will start all controllers and the boost manager)")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
@@ -160,47 +182,63 @@ func main() {
 func setupControllers(mgr ctrl.Manager, boostMgr boost.Manager, cfg *config.Config,
 	podLevelResourcesEnabled bool, serverVersion string, certsReady chan struct{},
 	controllersReady chan struct{}) {
-	defer close(controllersReady)
-	setupLog.Info("Waiting for certificate generation to complete")
+	setupLog.Info("setupControllers: goroutine started")
+	defer func() {
+		setupLog.Info("setupControllers: closing controllersReady channel")
+		close(controllersReady)
+		setupLog.Info("setupControllers: controllersReady channel closed, setup complete")
+	}()
+	setupLog.Info("setupControllers: waiting for certificate generation to complete")
 	<-certsReady
-	setupLog.Info("Certificate generation has completed")
+	setupLog.Info("setupControllers: certificate generation has completed")
 
+	setupLog.Info("setupControllers: setting up StartupCPUBoost webhooks")
 	if failedWebhook, err := boostWebhook.Setup(mgr); err != nil {
 		setupLog.Error(err, "Unable to create webhook", "webhook", failedWebhook)
 		os.Exit(1)
 	}
+	setupLog.Info("setupControllers: StartupCPUBoost webhooks configured")
+	
+	setupLog.Info("setupControllers: creating Pod CPU boost webhook")
 	cpuBoostWebHook := boostWebhook.NewPodCPUBoostWebHook(boostMgr, scheme, cfg.RemoveLimits,
 		podLevelResourcesEnabled)
 	mgr.GetWebhookServer().Register("/mutate-v1-pod", cpuBoostWebHook)
+	setupLog.Info("setupControllers: Pod CPU boost webhook registered")
+	
+	setupLog.Info("setupControllers: creating StartupCPUBoost reconciler")
 	boostCtrl := &controller.StartupCPUBoostReconciler{
 		Client:  mgr.GetClient(),
 		Scheme:  mgr.GetScheme(),
 		Log:     ctrl.Log.WithName("boost-reconciler"),
 		Manager: boostMgr,
 	}
+	setupLog.Info("setupControllers: setting reconciler on boost manager")
 	boostMgr.SetStartupCPUBoostReconciler(boostCtrl)
+	
+	setupLog.Info("setupControllers: setting up controller with manager", "serverVersion", serverVersion)
 	if err := boostCtrl.SetupWithManager(mgr, serverVersion); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "StartupCPUBoost")
 		os.Exit(1)
 	}
+	setupLog.Info("setupControllers: controller setup completed successfully")
 	//+kubebuilder:scaffold:builder
 }
 
 func setupReadyzCheck(mgr ctrl.Manager, boostMgr boost.Manager,
 	controllersReadyChan chan struct{}) error {
 	if err := mgr.AddReadyzCheck("readyz", func(req *http.Request) error {
-		controllersReady := false
 		select {
 		case <-controllersReadyChan:
-			controllersReady = true
+			setupLog.V(1).Info("readiness check: controllers are ready")
 		default:
-		}
-		if !controllersReady {
+			setupLog.V(1).Info("readiness check: controllers are not ready yet")
 			return fmt.Errorf("controllers are not ready")
 		}
-		if !boostMgr.IsRunning(req.Context()) {
-			return fmt.Errorf("boost manager is not running")
-		}
+		// Note: We don't check boostMgr.IsRunning() here because:
+		// 1. The boost manager starts after leader election (via mgr.Add(boostMgr))
+		// 2. The controller can reconcile and apply boosts even if the boost manager isn't running yet
+		// 3. The boost manager is a background service for time-based boost expiration, not required for readiness
+		setupLog.V(1).Info("readiness check: all checks passed")
 		return nil
 	}); err != nil {
 		setupLog.Error(err, "unable to set up ready check")

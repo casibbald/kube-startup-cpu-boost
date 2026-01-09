@@ -26,3 +26,24 @@ for more information on using pull requests.
 
 This project follows [Google's Open Source Community
 Guidelines](https://opensource.google/conduct/).
+
+## Development Workflow
+
+### Updating API Types and CRDs
+
+When you modify the API types in `api/v1alpha1/startupcpuboost_types.go`:
+
+1. **Generate CRDs**: Run `make manifests` to generate the CRD in `config/crd/bases/`
+2. **Sync Helm Chart CRD**: Run `make sync-helm-crd` to update the Helm chart CRD template
+   - This ensures the Helm chart CRD template stays in sync with the generated CRD
+   - The script preserves Helm-specific metadata (labels, annotations, template syntax)
+3. **Commit both files**: Commit both the generated CRD and the Helm chart CRD template
+
+**Important Notes**:
+- **Never manually edit** `charts/kube-startup-cpu-boost/templates/startupcpuboost-crd.yaml` directly
+  - It contains Helm template syntax (e.g., `{{- include ... }}`) and must be processed by Helm
+  - Manual edits will break YAML parsing and cause errors
+  - Always use `make sync-helm-crd` to update it from the generated CRD
+- The Helm chart CRD template must be kept in sync with the generated CRD (`config/crd/bases/autoscaling.x-k8s.io_startupcpuboosts.yaml`)
+- The `make sync-helm-crd` target automates this process and preserves Helm template syntax
+- Tilt automatically runs `make sync-helm-crd` after `make manifests` to keep them in sync during development

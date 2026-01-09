@@ -8,6 +8,12 @@
       },
       {
         "pattern": "^https://github.com/google/kube-startup-cpu-boost/compare/.*"
+      },
+      {
+        "pattern": "^http://localhost"
+      },
+      {
+        "pattern": "^https://localhost"
       }
     ]
 }

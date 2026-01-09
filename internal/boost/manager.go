@@ -248,23 +248,29 @@ func (m *managerImpl) SetStartupCPUBoostReconciler(reconciler reconcile.Reconcil
 // Start starts the manager time based check loop.
 func (m *managerImpl) Start(ctx context.Context) error {
 	defer m.ticker.Stop()
-	defer m.setRunning(false)
-	m.log.Info("starting")
+	defer func() {
+		m.log.Info("boost manager: setting isRunning to false")
+		m.setRunning(false)
+	}()
+	m.log.Info("boost manager: starting")
 	m.setRunning(true)
+	m.log.Info("boost manager: isRunning set to true, entering main loop")
 	for {
 		select {
 		case <-m.ticker.Tick():
 			m.log.V(5).Info("tick...")
 			m.validateTimePolicyBoosts(ctx)
 		case <-ctx.Done():
-			m.log.Info("stopping")
+			m.log.Info("boost manager: context cancelled, stopping")
 			return nil
 		}
 	}
 }
 
 func (m *managerImpl) IsRunning(ctx context.Context) bool {
-	return m.isRunning
+	running := m.isRunning
+	m.log.V(1).Info("boost manager: IsRunning check", "isRunning", running)
+	return running
 }
 
 // PRIVATE FUNCS START below
