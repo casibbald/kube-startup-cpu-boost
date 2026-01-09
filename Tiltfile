@@ -149,9 +149,9 @@ local_resource(
      docker build --no-cache -f Dockerfile.dev -t %s --rm --force-rm . && \
      echo "=== Post-Build Image Verification ===" && \
      echo "Verifying binary exists in final image..." && \
-     docker run --rm %s ls -lh /manager && \
-     docker run --rm %s test -f /manager && \
-     docker run --rm %s test -x /manager && \
+     docker run --rm --entrypoint="/bin/sh" %s -c "ls -lh /manager" && \
+     docker run --rm --entrypoint="/bin/sh" %s -c "test -f /manager" && \
+     docker run --rm --entrypoint="/bin/sh" %s -c "test -x /manager" && \
      echo "✅ Binary verified in final image" && \
      echo "=== Pushing Image ===" && \
      docker push %s' % (BINARY_PATH, BINARY_PATH, BINARY_PATH, BINARY_PATH, BINARY_PATH, BINARY_PATH, IMAGE_REF, IMAGE_REF, IMAGE_REF, IMAGE_REF, IMAGE_REF),
