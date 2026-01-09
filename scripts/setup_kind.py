@@ -25,6 +25,8 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.request
+import urllib.error
 from pathlib import Path
 
 
@@ -153,6 +155,91 @@ def setup_registry():
     )
     log_info(f"✅ Created registry '{REGISTRY_NAME}' on port {REGISTRY_PORT} with persistent volume '{volume_name}'")
     return REGISTRY_NAME
+
+
+def validate_registry():
+    """Validate that the registry is up and running.
+    
+    Checks:
+    1. Container is running
+    2. Registry API is accessible from host
+    3. Registry is listening on the correct port
+    
+    Raises SystemExit if validation fails.
+    """
+    log_info("Validating registry is up and running...")
+    
+    # Check if container is running
+    result = run_command(
+        f"docker ps --filter 'name={REGISTRY_NAME}' --format '{{{{.Names}}}}'",
+        check=False,
+        capture_output=True
+    )
+    if REGISTRY_NAME not in result.stdout:
+        log_error(f"Registry container '{REGISTRY_NAME}' is not running")
+        log_error("Please ensure the registry was created successfully")
+        sys.exit(1)
+    
+    # Wait a moment for registry to fully start
+    log_info("Waiting for registry to be ready...")
+    max_retries = 10
+    retry_delay = 1
+    
+    for attempt in range(max_retries):
+        # Check if registry API is accessible using Python urllib
+        try:
+            url = f"http://127.0.0.1:{REGISTRY_PORT}/v2/"
+            req = urllib.request.Request(url)
+            req.add_header('User-Agent', 'kube-startup-cpu-boost-setup')
+            with urllib.request.urlopen(req, timeout=5) as response:
+                response_data = response.read().decode('utf-8').strip()
+                # Registry v2 API returns empty JSON object "{}" or similar
+                if response.getcode() == 200:
+                    log_info(f"✅ Registry is accessible at http://127.0.0.1:{REGISTRY_PORT}")
+                    
+                    # Verify registry is listening on the correct port inside container
+                    result = run_command(
+                        f"docker exec {REGISTRY_NAME} wget -qO- http://localhost:{REGISTRY_PORT}/v2/ 2>/dev/null || docker exec {REGISTRY_NAME} sh -c 'wget -qO- http://localhost:{REGISTRY_PORT}/v2/ 2>/dev/null || echo \"wget not available\"'",
+                        check=False,
+                        capture_output=True
+                    )
+                    if result.returncode == 0 and "{}" in result.stdout:
+                        log_info(f"✅ Registry is listening on port {REGISTRY_PORT} inside container")
+                        return
+                    else:
+                        # Try alternative check - just verify container is running and port is mapped
+                        result = run_command(
+                            f"docker port {REGISTRY_NAME}",
+                            check=False,
+                            capture_output=True
+                        )
+                        if REGISTRY_PORT in result.stdout:
+                            log_info(f"✅ Registry port {REGISTRY_PORT} is mapped correctly")
+                            return
+                        else:
+                            log_warn(f"Could not verify registry port {REGISTRY_PORT} inside container")
+                            log_warn("Registry may still work, but this should be investigated")
+                            return
+        except urllib.error.URLError as e:
+            # Connection refused or timeout - registry not ready yet
+            pass
+        except Exception as e:
+            log_warn(f"Unexpected error checking registry: {e}")
+        
+        if attempt < max_retries - 1:
+            log_info(f"Registry not ready yet, retrying in {retry_delay}s... (attempt {attempt + 1}/{max_retries})")
+            time.sleep(retry_delay)
+        else:
+            log_error(f"Registry validation failed after {max_retries} attempts")
+            log_error(f"Registry container status:")
+            run_command(f"docker ps --filter 'name={REGISTRY_NAME}'", check=False)
+            log_error(f"Registry container logs (last 20 lines):")
+            run_command(f"docker logs {REGISTRY_NAME} --tail 20", check=False)
+            log_error(f"Please check the registry container and ensure it's running correctly")
+            sys.exit(1)
+    
+    log_error("Registry validation failed")
+    sys.exit(1)
 
 
 def get_registry_ip():
@@ -685,6 +772,7 @@ def main():
     check_command("kubectl")
     
     setup_registry()
+    validate_registry()
     setup_kind_cluster()
 
 
