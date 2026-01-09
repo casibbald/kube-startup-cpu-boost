@@ -16,7 +16,6 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - examples/namespace.yaml
   - examples/postgresql-pvc.yaml
   - examples/postgresql-with-envoy-runtime.yaml
   - examples/spring-demo-app.yaml

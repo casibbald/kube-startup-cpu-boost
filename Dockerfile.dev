@@ -14,40 +14,43 @@
 
 # Development Dockerfile for kube-startup-cpu-boost (Tilt/local dev)
 # Binary is built on host and copied in
-# Uses distroless base for minimal runtime
+# Uses alpine base for simplicity and debugging tools
 
 # Stage 1: Verify binary exists and is executable
 FROM alpine:3.19 AS verify
 WORKDIR /verify
 # Copy pre-built binary from bin directory
 COPY bin/manager /verify/manager
-# Verify binary exists, has non-zero size, and is executable
-RUN test -f /verify/manager && \
+# Verify binary exists in final location and fail if it doesn't
+RUN ls -la /verify/manager && \
+    test -f /verify/manager && \
     test -s /verify/manager && \
     test -x /verify/manager && \
     echo "✅ Binary verification passed: $(ls -lh /verify/manager)" || \
-    (echo "❌ ERROR: Binary verification failed" && exit 1)
+    (echo "❌ ERROR: Binary missing or invalid in /verify/manager" && exit 1)
 
-# Stage 2: Verify copy works (intermediate verification stage)
-FROM alpine:3.19 AS copy-verify
-WORKDIR /
-# Copy from verify stage to test the copy works
-COPY --from=verify /verify/manager /copy-verify/manager
-# Verify the copy succeeded
-RUN test -f /copy-verify/manager && \
-    test -s /copy-verify/manager && \
-    test -x /copy-verify/manager && \
-    echo "✅ Copy verification passed: $(ls -lh /copy-verify/manager)" || \
-    (echo "❌ ERROR: Binary copy failed" && exit 1)
-
-# Stage 3: Final distroless image (copy from verified stage)
-FROM gcr.io/distroless/static:nonroot
+# Stage 2: Final image with tools available for debugging
+FROM alpine:3.19
 WORKDIR /
 
-# Copy verified binary from copy-verify stage (proven to work)
-COPY --from=copy-verify --chmod=755 /copy-verify/manager /manager
+# Create a non-root user for running the manager
+# Using UID 1000 (standard non-root user) and GID 1000
+RUN addgroup -g 1000 nonroot && \
+    adduser -D -u 1000 -G nonroot nonroot
 
-USER 65532:65532
+# Copy verified binary from verify stage (proven to exist)
+COPY --from=verify --chmod=755 /verify/manager /manager
+
+# Verify binary exists in final location
+RUN ls -la /manager && \
+    test -f /manager && \
+    test -s /manager && \
+    test -x /manager && \
+    echo "✅ Final binary verification passed: $(ls -lh /manager)" || \
+    (echo "❌ ERROR: Binary missing in final location /manager" && exit 1)
+
+# Switch to non-root user
+USER nonroot:nonroot
 
 # Run the manager
 ENTRYPOINT ["/manager"]

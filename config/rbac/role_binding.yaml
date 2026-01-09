@@ -15,5 +15,5 @@ roleRef:
   name: manager-role
 subjects:
 - kind: ServiceAccount
-  name: controller-manager
-  namespace: system
+  name: kube-startup-cpu-boost-controller-manager
+  namespace: kube-startup-cpu-boost-system

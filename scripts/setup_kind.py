@@ -522,8 +522,9 @@ def setup_kind_cluster():
             ensure_registry_connected()
             # Ensure containerd is configured
             configure_containerd_registry()
-            # Ensure namespace exists
-            create_namespace()
+            # Ensure namespaces exist
+            create_namespace("kube-startup-cpu-boost-system")
+            create_namespace("demo")
             return
         log_warn(f"Cluster {CLUSTER_NAME} already exists")
         response = input("Do you want to delete and recreate it? (y/N) ")
@@ -536,8 +537,9 @@ def setup_kind_cluster():
             ensure_registry_connected()
             # Ensure containerd is configured
             configure_containerd_registry()
-            # Ensure namespace exists
-            create_namespace()
+            # Ensure namespaces exist
+            create_namespace("kube-startup-cpu-boost-system")
+            create_namespace("demo")
             return
     
     # Check if kind-config.yaml exists
@@ -656,9 +658,10 @@ data:
         check=True
     )
     
-    # Create namespace for the controller
+    # Create namespaces for the controller and demo app
     # This must be done before installing CRDs or deploying resources
-    create_namespace()
+    create_namespace("kube-startup-cpu-boost-system")
+    create_namespace("demo")
     
     # Install CRDs from kustomize output
     # This ensures the CRDs are always available and established before any resources are applied
