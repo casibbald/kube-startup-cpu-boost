@@ -170,9 +170,15 @@ jobs:
           
           echo "✅ Cluster verification complete"
 
-      - name: Create namespace
+      - name: Create namespaces
         run: |
+          # Create namespace for controller (idempotent)
           kubectl create namespace kube-startup-cpu-boost-system --dry-run=client -o yaml | kubectl apply -f -
+          echo "✅ Namespace 'kube-startup-cpu-boost-system' created"
+          
+          # Create demo namespace for demo app (idempotent)
+          kubectl create namespace demo --dry-run=client -o yaml | kubectl apply -f -
+          echo "✅ Namespace 'demo' created"
 
       - name: Create local registry ConfigMap for Tilt
         run: |

@@ -40,6 +40,7 @@ When you modify the API types in `api/v1alpha1/startupcpuboost_types.go`:
 3. **Commit both files**: Commit both the generated CRD and the Helm chart CRD template
 
 **Important Notes**:
+
 - **Never manually edit** `charts/kube-startup-cpu-boost/templates/startupcpuboost-crd.yaml` directly
   - It contains Helm template syntax (e.g., `{{- include ... }}`) and must be processed by Helm
   - Manual edits will break YAML parsing and cause errors
