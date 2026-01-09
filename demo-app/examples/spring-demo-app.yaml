@@ -55,7 +55,7 @@ spec:
             port: http
             scheme: HTTP
         livenessProbe:
-          initialDelaySeconds: 15  # Wait 15 seconds before first check (app takes ~4s to start)
+          initialDelaySeconds: 15  # Wait 15 seconds before fir, st check (app takes ~4s to start)
           periodSeconds: 2
           failureThreshold: 60
           httpGet:
@@ -64,10 +64,10 @@ spec:
             scheme: HTTP
         resources:
           limits:
-            cpu: "1"
+            cpu: 300m
             memory: 512Mi
           requests:
-            cpu: 500m
+            cpu: 100m
             memory: 512Mi
       volumes:
       - name: spring-demo-app-config

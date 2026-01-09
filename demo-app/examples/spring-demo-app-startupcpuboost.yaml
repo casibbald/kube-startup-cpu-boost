@@ -24,9 +24,8 @@ spec:
   resourcePolicy:
     containerPolicies:
     - containerName: spring-demo-app
-      fixedResources:
-        requests: "2"
-        limits: "4"
+      percentageIncrease:
+        value: 300
   durationPolicy:
     fixedDuration:
       unit: Minutes

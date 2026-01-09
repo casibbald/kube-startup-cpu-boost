@@ -55,8 +55,8 @@ var (
 	setupLog         = ctrl.Log.WithName("setup")
 	leaderElectionID = "8fd077db.x-k8s.io"
 	// Build-time variables injected via -ldflags
-	buildGitHash    = "unknown"
-	buildTimestamp  = "unknown"
+	buildGitHash   = "unknown"
+	buildTimestamp = "unknown"
 )
 
 //+kubebuilder:rbac:urls="/metrics",verbs=get
@@ -74,11 +74,11 @@ func main() {
 		os.Exit(1)
 	}
 	ctrl.SetLogger(config.Logger(cfg.ZapDevelopment, cfg.ZapLogLevel))
-	
+
 	// Log build information (timestamp and git hash) at startup
 	// This ensures each build is unique and prevents Docker cache issues
 	setupLog.Info("build information", "gitHash", buildGitHash, "buildTime", buildTimestamp)
-	
+
 	metrics.Register()
 	restConfig := ctrl.GetConfigOrDie()
 
@@ -128,10 +128,10 @@ func main() {
 			SecureServing: cfg.SecureMetrics,
 			TLSOpts:       tlsOpts,
 		},
-		WebhookServer:          webhookServer,
-		HealthProbeBindAddress: cfg.HealthProbeBindAddr,
-		LeaderElection:         cfg.LeaderElection,
-		LeaderElectionID:       leaderElectionID,
+		WebhookServer:           webhookServer,
+		HealthProbeBindAddress:  cfg.HealthProbeBindAddr,
+		LeaderElection:          cfg.LeaderElection,
+		LeaderElectionID:        leaderElectionID,
 		LeaderElectionNamespace: cfg.Namespace,
 	})
 	if err != nil {
@@ -198,13 +198,13 @@ func setupControllers(mgr ctrl.Manager, boostMgr boost.Manager, cfg *config.Conf
 		os.Exit(1)
 	}
 	setupLog.Info("setupControllers: StartupCPUBoost webhooks configured")
-	
+
 	setupLog.Info("setupControllers: creating Pod CPU boost webhook")
 	cpuBoostWebHook := boostWebhook.NewPodCPUBoostWebHook(boostMgr, scheme, cfg.RemoveLimits,
 		podLevelResourcesEnabled)
 	mgr.GetWebhookServer().Register("/mutate-v1-pod", cpuBoostWebHook)
 	setupLog.Info("setupControllers: Pod CPU boost webhook registered")
-	
+
 	setupLog.Info("setupControllers: creating StartupCPUBoost reconciler")
 	boostCtrl := &controller.StartupCPUBoostReconciler{
 		Client:  mgr.GetClient(),
@@ -214,7 +214,7 @@ func setupControllers(mgr ctrl.Manager, boostMgr boost.Manager, cfg *config.Conf
 	}
 	setupLog.Info("setupControllers: setting reconciler on boost manager")
 	boostMgr.SetStartupCPUBoostReconciler(boostCtrl)
-	
+
 	setupLog.Info("setupControllers: setting up controller with manager", "serverVersion", serverVersion)
 	if err := boostCtrl.SetupWithManager(mgr, serverVersion); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "StartupCPUBoost")

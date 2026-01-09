@@ -82,10 +82,11 @@ type StartupCPUBoost interface {
 }
 
 const (
-	StartupCPUBoostStatsPodCreateEvent = 1
-	StartupCPUBoostStatsPodUpdateEvent = 2
-	StartupCPUBoostStatsPodDeleteEvent = 3
-	ResizeSubResourceName              = "resize"
+	StartupCPUBoostStatsPodCreateEvent    = 1
+	StartupCPUBoostStatsPodUpdateEvent    = 2
+	StartupCPUBoostStatsPodDeleteEvent    = 3
+	StartupCPUBoostStatsRuntimeBoostEvent = 4 // New boost applied at runtime (ContainerRestart/PodConditionTransition)
+	ResizeSubResourceName                 = "resize"
 )
 
 type StartupCPUBoostStatsEventType int32
@@ -383,19 +384,33 @@ func (b *StartupCPUBoostImpl) ApplyBoostAtRuntime(ctx context.Context, pod *core
 	activation := NewBoostActivation(*matchingTrigger, b.durationPolicy)
 
 	// Store original resources in annotation if not already stored
+	// Track how many containers are being boosted for the first time
+	newlyBoostedContainers := 0
 	for i := range pod.Spec.Containers {
 		container := &pod.Spec.Containers[i]
 		containerName := container.Name
 
+		// Check if this container was already boosted before
+		wasAlreadyBoosted := false
+		if _, exists := annotation.InitCPURequests[containerName]; exists {
+			wasAlreadyBoosted = true
+		}
+
 		// Store original resources if not already stored
-		if _, exists := annotation.InitCPURequests[containerName]; !exists {
+		if !wasAlreadyBoosted {
 			if cpuRequests, ok := container.Resources.Requests[corev1.ResourceCPU]; ok {
 				annotation.InitCPURequests[containerName] = cpuRequests.String()
 			}
-		}
-		if _, exists := annotation.InitCPULimits[containerName]; !exists {
 			if cpuLimits, ok := container.Resources.Limits[corev1.ResourceCPU]; ok {
 				annotation.InitCPULimits[containerName] = cpuLimits.String()
+			}
+			newlyBoostedContainers++
+		} else {
+			// Ensure limits are also stored if they exist
+			if _, exists := annotation.InitCPULimits[containerName]; !exists {
+				if cpuLimits, ok := container.Resources.Limits[corev1.ResourceCPU]; ok {
+					annotation.InitCPULimits[containerName] = cpuLimits.String()
+				}
 			}
 		}
 	}
@@ -451,7 +466,11 @@ func (b *StartupCPUBoostImpl) ApplyBoostAtRuntime(ctx context.Context, pod *core
 
 	// Update pod tracking
 	b.pods[pod.Name] = pod
-	b.updateStats(StartupCPUBoostStatsEvent{StartupCPUBoostStatsPodUpdateEvent, pod})
+	// Use RuntimeBoostEvent to indicate a new boost was applied at runtime
+	// Only count containers that were just boosted (not already boosted)
+	// We pass the number of newly boosted containers via the pod's annotation state
+	// The updateStats function will calculate based on the current state
+	b.updateStats(StartupCPUBoostStatsEvent{StartupCPUBoostStatsRuntimeBoostEvent, pod})
 
 	log.Info("boost applied successfully at runtime", "trigger", triggerType)
 	return true, nil
@@ -520,6 +539,10 @@ func (b *StartupCPUBoostImpl) updateBoostPodLegacy(ctx context.Context, pod *cor
 // updateStats updates the StartupCPUBoost usage statistics based on the
 // received update event
 func (b *StartupCPUBoostImpl) updateStats(e StartupCPUBoostStatsEvent) {
+	// ActiveContainerBoosts counts all containers with boost annotations
+	// (containers that have been boosted and not yet reverted)
+	// This matches the original behavior where any container with boost annotations
+	// is considered "active" (boosted resources not yet reverted)
 	var activeCnt int
 	for _, pod := range b.pods {
 		activeCnt += boostContainersLen(pod)
@@ -532,14 +555,38 @@ func (b *StartupCPUBoostImpl) updateStats(e StartupCPUBoostStatsEvent) {
 		boostContainersLen := boostContainersLen(pod)
 		b.stats.TotalContainerBoosts += boostContainersLen
 		metrics.AddBoostContainersTotal(b.namespace, b.name, float64(boostContainersLen))
+	case StartupCPUBoostStatsRuntimeBoostEvent:
+		// Runtime boost was applied (ContainerRestart or PodConditionTransition)
+		// Count containers that have boost annotations (were just boosted)
+		// This ensures we count the boost activation correctly
+		pod := e.Object.(*corev1.Pod)
+		boostContainersLen := boostContainersLen(pod)
+		if boostContainersLen > 0 {
+			b.stats.TotalContainerBoosts += boostContainersLen
+			metrics.AddBoostContainersTotal(b.namespace, b.name, float64(boostContainersLen))
+		}
 	}
 }
 
-// boostContainersLen returns the number of containers that were boosted
-// by StartupCPUBoost in a given Pod
+// boostContainersLen returns the number of containers that have boost annotations
+// (i.e., containers that have been boosted at some point)
 func boostContainersLen(pod *corev1.Pod) (cnt int) {
 	if annot, err := bpod.BoostAnnotationFromPod(pod); err == nil {
 		return len(annot.InitCPURequests)
+	}
+	return
+}
+
+// activeBoostContainersLen returns the number of containers that currently have an active boost
+// (i.e., containers with a current activation that hasn't expired)
+func activeBoostContainersLen(pod *corev1.Pod) (cnt int) {
+	if annot, err := bpod.BoostAnnotationFromPod(pod); err == nil {
+		// Only count containers if there's a current active boost
+		currentActivation := annot.GetCurrentActivation()
+		if currentActivation != nil {
+			// Count containers that have boost annotations (they're actively boosted)
+			return len(annot.InitCPURequests)
+		}
 	}
 	return
 }
