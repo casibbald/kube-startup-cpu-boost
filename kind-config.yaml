@@ -16,13 +16,12 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: kube-startup-cpu-boost
 # Configure containerd to use local registry mirror
-# This maps localhost:5001 to kind-registry:5000 (container name, Docker DNS resolves it)
-# Note: Host port is 5001 to avoid conflict with macOS AirPlay Receiver (port 5000)
-# Container port remains 5000 (registry default)
+# This maps localhost:5001 to kind-registry:5001 (container name, Docker DNS resolves it)
+# Note: Both host and container use port 5001 to avoid conflict with macOS AirPlay Receiver (port 5000)
 containerdConfigPatches:
   - |-
     [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5001"]
-      endpoint = ["http://kind-registry:5000"]
+      endpoint = ["http://kind-registry:5001"]
 nodes:
 - role: control-plane
   image: kindest/node:v1.34.0@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a

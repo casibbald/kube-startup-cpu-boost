@@ -138,7 +138,7 @@ def setup_registry():
     # No registry found, create a new one
     log_info("Creating local Docker registry...")
     # Bind to 127.0.0.1 only to avoid conflicts with macOS Control Center on port 5000
-    # Using port 5001 on host, container uses port 5000 (registry default)
+    # Using port 5001 on both host and container to avoid conflict with macOS AirPlay Receiver
     # Use a named volume for persistent storage (survives container restarts)
     # This prevents losing images when the registry container is recreated
     volume_name = f"{REGISTRY_NAME}-data"
@@ -147,7 +147,7 @@ def setup_registry():
         check=False  # Volume may already exist
     )
     run_command(
-        f"docker run -d --restart=always -p 127.0.0.1:{REGISTRY_PORT}:5000 "
+        f"docker run -d --restart=always -p 127.0.0.1:{REGISTRY_PORT}:{REGISTRY_PORT} "
         f"-v {volume_name}:/var/lib/registry --name {REGISTRY_NAME} registry:2"
     )
     log_info(f"✅ Created registry '{REGISTRY_NAME}' on port {REGISTRY_PORT} with persistent volume '{volume_name}'")
@@ -214,15 +214,15 @@ def configure_containerd_registry():
         log_error("Could not determine registry IP address after retries")
         log_error("Registry may not be connected to kind network")
         # Don't exit - try to continue with container name (may work if DNS is configured)
-        registry_endpoint = f"http://{REGISTRY_NAME}:5000"
+        registry_endpoint = f"http://{REGISTRY_NAME}:{REGISTRY_PORT}"
         log_warn(f"Falling back to container name: {registry_endpoint}")
     else:
         log_info(f"Using registry IP: {registry_ip}")
-        registry_endpoint = f"http://{registry_ip}:5000"
+        registry_endpoint = f"http://{registry_ip}:{REGISTRY_PORT}"
     
     # Containerd config patch to add registry mirror
     # Use IP address for reliable connectivity (avoids DNS resolution issues)
-    # Note: Host uses port 5001, container uses port 5000
+    # Note: Both host and container use port 5001
     containerd_patch = f"""
 [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5001"]
   endpoint = ["{registry_endpoint}"]

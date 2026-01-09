@@ -89,13 +89,13 @@ def configure_node_registry(node, registry_name):
     """
     # Use container name instead of IP - Docker DNS will resolve it
     # This is more reliable than using IP addresses which can change
-    registry_endpoint = f"http://{registry_name}:5000"
+    registry_endpoint = f"http://{registry_name}:5001"
     
     # Build TOML config lines
     toml_lines = [
-        '[plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5000"]',
+        '[plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:5001"]',
         f'  endpoint = ["{registry_endpoint}"]',
-        f'[plugins."io.containerd.grpc.v1.cri".registry.mirrors."{registry_name}:5000"]',
+        f'[plugins."io.containerd.grpc.v1.cri".registry.mirrors."{registry_name}:5001"]',
         f'  endpoint = ["{registry_endpoint}"]',
     ]
 

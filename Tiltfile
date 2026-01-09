@@ -34,11 +34,11 @@ allow_k8s_contexts(['kind-kube-startup-cpu-boost'])
 # Configure default registry for Kind cluster
 # Explicitly set registry to avoid auto-detection from ConfigMap
 # The registry is set up by scripts/setup_kind.py as 'kind-registry' on localhost:5001
-# host_from_cluster uses the container name 'kind-registry:5000' which Docker DNS resolves
-# Note: Host port is 5001 to avoid conflict with macOS AirPlay Receiver (port 5000)
+# host_from_cluster uses the container name 'kind-registry:5001' which Docker DNS resolves
+# Note: Both host and container use port 5001 to avoid conflict with macOS AirPlay Receiver (port 5000)
 default_registry(
     'localhost:5001',           # Registry host as seen from local machine (port 5001)
-    host_from_cluster='kind-registry:5000'  # Registry host as seen from within Kind cluster (container port 5000)
+    host_from_cluster='kind-registry:5001'  # Registry host as seen from within Kind cluster (container port 5001)
 )
 
 # Suppress warning for custom_build image that uses full registry path
@@ -117,7 +117,7 @@ IMAGE_NAME = 'kube-startup-cpu-boost'
 # Registry as seen from host (for docker push)
 REGISTRY_HOST = 'localhost:5001'
 # Registry as seen from inside Kind cluster (for Kubernetes image pull)
-REGISTRY_CLUSTER = 'kind-registry:5000'
+REGISTRY_CLUSTER = 'kind-registry:5001'
 FULL_IMAGE_NAME_HOST = '%s/%s' % (REGISTRY_HOST, IMAGE_NAME)
 FULL_IMAGE_NAME_CLUSTER = '%s/%s' % (REGISTRY_CLUSTER, IMAGE_NAME)
 # Use unique tag per build to prevent Kubernetes from using cached images
