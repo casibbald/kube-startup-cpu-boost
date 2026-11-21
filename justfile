@@ -47,13 +47,13 @@ kind-delete:
 # Start Tilt only (assumes cluster is already running)
 tilt-up:
     @echo "🎯 Starting Tilt..."
-    @echo "   Tilt UI: http://localhost:10350"
-    @tilt up
+    @echo "   Tilt UI: http://0.0.0.0:10350 (LAN: http://<this-host>:10350/)"
+    @tilt up --host 0.0.0.0 --port 10350
 
 # Stop Tilt only
 tilt-down:
     @echo "🛑 Stopping Tilt..."
-    @tilt down || echo "Tilt not running or already stopped"
+    @tilt down --port 10350 || echo "Tilt not running or already stopped"
 
 # Run all tests with coverage
 test:
